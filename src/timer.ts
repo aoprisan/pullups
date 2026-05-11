@@ -1,37 +1,37 @@
-export type Phase = "idle" | "countdown" | "running" | "paused" | "done";
+export type Phase = "idle" | "ready" | "resting" | "paused" | "done";
 
 export interface ViewState {
   phase: Phase;
   totalReps: number;
-  repsCued: number;
-  countdownSecondsRemaining: number;
-  secondsToNextRep: number;
-  elapsedMs: number;
-  totalMs: number;
-  newRepCueIndex: number | null;
-  newCountdownTickIndex: number | null;
+  repsCompleted: number;
+  currentRepNumber: number;
+  secondsRemainingInRest: number;
+  restElapsedMs: number;
+  restTotalMs: number;
+  totalElapsedMs: number;
+  newRepReadyIndex: number | null;
+  newRestCountdownTickIndex: number | null;
 }
 
 export interface TimerConfig {
   totalReps: number;
   intervalMs: number;
-  countdownMs: number;
 }
 
 const DEFAULT_CONFIG: TimerConfig = {
   totalReps: 20,
   intervalMs: 60_000,
-  countdownMs: 5_000,
 };
 
-export class EmomTimer {
+export class PullupTimer {
   private readonly cfg: TimerConfig;
   private phase: Phase = "idle";
-  private countdownStartMs = 0;
-  private runStartMs = 0;
+  private repsCompleted = 0;
+  private startedAtMs = 0;
+  private restStartMs = 0;
   private pausedAtMs = 0;
-  private lastRepCued = 0;
-  private lastCountdownTick = -1;
+  private finishedAtMs = 0;
+  private lastRestTickIndex = -1;
 
   constructor(config: Partial<TimerConfig> = {}) {
     this.cfg = { ...DEFAULT_CONFIG, ...config };
@@ -41,25 +41,40 @@ export class EmomTimer {
     return this.cfg.totalReps;
   }
 
-  get totalDurationMs(): number {
-    return (this.cfg.totalReps - 1) * this.cfg.intervalMs;
-  }
-
   get currentPhase(): Phase {
     return this.phase;
   }
 
+  get completedReps(): number {
+    return this.repsCompleted;
+  }
+
   start(now: number): void {
     if (this.phase !== "idle" && this.phase !== "done") return;
-    this.phase = "countdown";
-    this.countdownStartMs = now;
-    this.runStartMs = now + this.cfg.countdownMs;
-    this.lastRepCued = 0;
-    this.lastCountdownTick = -1;
+    this.repsCompleted = 0;
+    this.startedAtMs = now;
+    this.restStartMs = 0;
+    this.pausedAtMs = 0;
+    this.finishedAtMs = 0;
+    this.lastRestTickIndex = -1;
+    this.phase = "ready";
+  }
+
+  repDone(now: number): void {
+    if (this.phase !== "ready") return;
+    this.repsCompleted += 1;
+    if (this.repsCompleted >= this.cfg.totalReps) {
+      this.finishedAtMs = now;
+      this.phase = "done";
+      return;
+    }
+    this.restStartMs = now;
+    this.lastRestTickIndex = -1;
+    this.phase = "resting";
   }
 
   pause(now: number): void {
-    if (this.phase !== "running" && this.phase !== "countdown") return;
+    if (this.phase !== "resting") return;
     this.pausedAtMs = now;
     this.phase = "paused";
   }
@@ -67,164 +82,140 @@ export class EmomTimer {
   resume(now: number): void {
     if (this.phase !== "paused") return;
     const drift = now - this.pausedAtMs;
-    this.countdownStartMs += drift;
-    this.runStartMs += drift;
-    this.phase = now < this.runStartMs ? "countdown" : "running";
+    this.startedAtMs += drift;
+    this.restStartMs += drift;
+    this.phase = "resting";
   }
 
   reset(): void {
     this.phase = "idle";
-    this.countdownStartMs = 0;
-    this.runStartMs = 0;
+    this.repsCompleted = 0;
+    this.startedAtMs = 0;
+    this.restStartMs = 0;
     this.pausedAtMs = 0;
-    this.lastRepCued = 0;
-    this.lastCountdownTick = -1;
+    this.finishedAtMs = 0;
+    this.lastRestTickIndex = -1;
   }
 
   tick(now: number): ViewState {
-    const totalMs = this.totalDurationMs;
+    const total = this.cfg.totalReps;
+    const intervalMs = this.cfg.intervalMs;
 
     if (this.phase === "idle") {
-      return this.viewIdle(totalMs);
+      return view({
+        phase: "idle",
+        total,
+        repsCompleted: 0,
+        currentRep: 1,
+        restElapsed: 0,
+        restTotal: intervalMs,
+        totalElapsed: 0,
+      });
+    }
+
+    if (this.phase === "done") {
+      return view({
+        phase: "done",
+        total,
+        repsCompleted: total,
+        currentRep: total,
+        restElapsed: 0,
+        restTotal: intervalMs,
+        totalElapsed: Math.max(0, this.finishedAtMs - this.startedAtMs),
+      });
+    }
+
+    if (this.phase === "ready") {
+      return view({
+        phase: "ready",
+        total,
+        repsCompleted: this.repsCompleted,
+        currentRep: this.repsCompleted + 1,
+        restElapsed: 0,
+        restTotal: intervalMs,
+        totalElapsed: now - this.startedAtMs,
+      });
     }
 
     if (this.phase === "paused") {
-      return this.viewPaused(totalMs);
-    }
-
-    if (this.phase === "countdown") {
-      return this.advanceCountdown(now, totalMs);
-    }
-
-    if (this.phase === "running") {
-      return this.advanceRunning(now, totalMs);
-    }
-
-    return this.viewDone(totalMs);
-  }
-
-  private viewIdle(totalMs: number): ViewState {
-    return {
-      phase: "idle",
-      totalReps: this.cfg.totalReps,
-      repsCued: 0,
-      countdownSecondsRemaining: Math.ceil(this.cfg.countdownMs / 1000),
-      secondsToNextRep: 0,
-      elapsedMs: 0,
-      totalMs,
-      newRepCueIndex: null,
-      newCountdownTickIndex: null,
-    };
-  }
-
-  private viewPaused(totalMs: number): ViewState {
-    const refMs = this.pausedAtMs;
-    if (refMs < this.runStartMs) {
-      const remainingMs = Math.max(0, this.runStartMs - refMs);
-      return {
+      const restElapsed = Math.min(intervalMs, Math.max(0, this.pausedAtMs - this.restStartMs));
+      return view({
         phase: "paused",
-        totalReps: this.cfg.totalReps,
-        repsCued: 0,
-        countdownSecondsRemaining: Math.ceil(remainingMs / 1000),
-        secondsToNextRep: Math.ceil(remainingMs / 1000),
-        elapsedMs: 0,
-        totalMs,
-        newRepCueIndex: null,
-        newCountdownTickIndex: null,
-      };
-    }
-    const elapsedMs = Math.min(totalMs, refMs - this.runStartMs);
-    const repsCued = Math.min(this.cfg.totalReps, Math.floor(elapsedMs / this.cfg.intervalMs) + 1);
-    const nextRepAtMs = repsCued * this.cfg.intervalMs;
-    const secondsToNextRep = Math.max(0, Math.ceil((nextRepAtMs - elapsedMs) / 1000));
-    return {
-      phase: "paused",
-      totalReps: this.cfg.totalReps,
-      repsCued,
-      countdownSecondsRemaining: 0,
-      secondsToNextRep,
-      elapsedMs,
-      totalMs,
-      newRepCueIndex: null,
-      newCountdownTickIndex: null,
-    };
-  }
-
-  private advanceCountdown(now: number, totalMs: number): ViewState {
-    const remainingMs = this.runStartMs - now;
-    if (remainingMs <= 0) {
-      this.phase = "running";
-      return this.advanceRunning(now, totalMs);
+        total,
+        repsCompleted: this.repsCompleted,
+        currentRep: this.repsCompleted + 1,
+        restElapsed,
+        restTotal: intervalMs,
+        totalElapsed: this.pausedAtMs - this.startedAtMs,
+      });
     }
 
+    const restElapsed = now - this.restStartMs;
+    if (restElapsed >= intervalMs) {
+      this.phase = "ready";
+      this.lastRestTickIndex = -1;
+      const cueIndex = this.repsCompleted + 1;
+      return view({
+        phase: "ready",
+        total,
+        repsCompleted: this.repsCompleted,
+        currentRep: cueIndex,
+        restElapsed: intervalMs,
+        restTotal: intervalMs,
+        totalElapsed: now - this.startedAtMs,
+        newRepReadyIndex: cueIndex,
+      });
+    }
+
+    const remainingMs = intervalMs - restElapsed;
     const remainingS = Math.ceil(remainingMs / 1000);
-    const tickIndex = Math.ceil(this.cfg.countdownMs / 1000) - remainingS;
-    let newCountdownTickIndex: number | null = null;
-    if (tickIndex > this.lastCountdownTick) {
-      this.lastCountdownTick = tickIndex;
-      newCountdownTickIndex = tickIndex;
+
+    let newRestCountdownTickIndex: number | null = null;
+    if (remainingS <= 3 && remainingS > 0) {
+      const tickIndex = 3 - remainingS;
+      if (tickIndex > this.lastRestTickIndex) {
+        this.lastRestTickIndex = tickIndex;
+        newRestCountdownTickIndex = tickIndex;
+      }
     }
 
-    return {
-      phase: "countdown",
-      totalReps: this.cfg.totalReps,
-      repsCued: 0,
-      countdownSecondsRemaining: remainingS,
-      secondsToNextRep: remainingS,
-      elapsedMs: 0,
-      totalMs,
-      newRepCueIndex: null,
-      newCountdownTickIndex,
-    };
+    return view({
+      phase: "resting",
+      total,
+      repsCompleted: this.repsCompleted,
+      currentRep: this.repsCompleted + 1,
+      restElapsed,
+      restTotal: intervalMs,
+      totalElapsed: now - this.startedAtMs,
+      newRestCountdownTickIndex,
+    });
   }
+}
 
-  private advanceRunning(now: number, totalMs: number): ViewState {
-    const rawElapsed = now - this.runStartMs;
-    const elapsedMs = Math.max(0, Math.min(totalMs, rawElapsed));
+interface ViewArgs {
+  phase: Phase;
+  total: number;
+  repsCompleted: number;
+  currentRep: number;
+  restElapsed: number;
+  restTotal: number;
+  totalElapsed: number;
+  newRepReadyIndex?: number | null;
+  newRestCountdownTickIndex?: number | null;
+}
 
-    const repsCued = Math.min(
-      this.cfg.totalReps,
-      Math.floor(rawElapsed / this.cfg.intervalMs) + 1,
-    );
-
-    let newRepCueIndex: number | null = null;
-    if (repsCued > this.lastRepCued) {
-      this.lastRepCued = repsCued;
-      newRepCueIndex = repsCued;
-    }
-
-    const nextRepAtMs = repsCued * this.cfg.intervalMs;
-    const secondsToNextRep =
-      repsCued >= this.cfg.totalReps ? 0 : Math.max(0, Math.ceil((nextRepAtMs - rawElapsed) / 1000));
-
-    if (repsCued >= this.cfg.totalReps && rawElapsed >= totalMs) {
-      this.phase = "done";
-    }
-
-    return {
-      phase: this.phase,
-      totalReps: this.cfg.totalReps,
-      repsCued,
-      countdownSecondsRemaining: 0,
-      secondsToNextRep,
-      elapsedMs,
-      totalMs,
-      newRepCueIndex,
-      newCountdownTickIndex: null,
-    };
-  }
-
-  private viewDone(totalMs: number): ViewState {
-    return {
-      phase: "done",
-      totalReps: this.cfg.totalReps,
-      repsCued: this.cfg.totalReps,
-      countdownSecondsRemaining: 0,
-      secondsToNextRep: 0,
-      elapsedMs: totalMs,
-      totalMs,
-      newRepCueIndex: null,
-      newCountdownTickIndex: null,
-    };
-  }
+function view(a: ViewArgs): ViewState {
+  const remainingMs = Math.max(0, a.restTotal - a.restElapsed);
+  return {
+    phase: a.phase,
+    totalReps: a.total,
+    repsCompleted: a.repsCompleted,
+    currentRepNumber: Math.min(a.total, Math.max(1, a.currentRep)),
+    secondsRemainingInRest: Math.ceil(remainingMs / 1000),
+    restElapsedMs: a.restElapsed,
+    restTotalMs: a.restTotal,
+    totalElapsedMs: Math.max(0, a.totalElapsed),
+    newRepReadyIndex: a.newRepReadyIndex ?? null,
+    newRestCountdownTickIndex: a.newRestCountdownTickIndex ?? null,
+  };
 }

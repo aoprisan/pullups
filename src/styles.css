@@ -153,56 +153,68 @@ header.title strong {
   box-shadow: 0 0 16px rgba(240, 198, 116, 0.5);
 }
 
-.next-rep {
+.rest-card {
   background: var(--bg-elev);
   border-radius: var(--radius);
   padding: 16px 18px;
   display: flex;
-  justify-content: space-between;
-  align-items: center;
+  flex-direction: column;
+  gap: 12px;
   border: 1px solid #1d242b;
 }
 
-.next-rep .label {
+.rest-card .rest-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.rest-card .label {
   color: var(--fg-dim);
   font-size: 13px;
   letter-spacing: 0.05em;
   text-transform: uppercase;
 }
 
-.next-rep .value {
+.rest-card .value {
   font-variant-numeric: tabular-nums;
   font-size: 32px;
   font-weight: 600;
   letter-spacing: -0.01em;
+  color: var(--warn);
 }
 
-.progress {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.progress .bar {
-  height: 10px;
+.rest-card .bar {
+  height: 8px;
   background: var(--track);
   border-radius: 999px;
   overflow: hidden;
 }
 
-.progress .bar > div {
+.rest-card .bar > div {
   height: 100%;
-  background: linear-gradient(90deg, var(--accent), #4cd6e0);
+  background: linear-gradient(90deg, var(--warn), var(--accent));
   transition: width 200ms linear;
 }
 
-.progress .meta {
+.meta-line {
   display: flex;
   justify-content: space-between;
-  font-variant-numeric: tabular-nums;
+  align-items: baseline;
   color: var(--fg-dim);
   font-size: 13px;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.meta-line .value {
+  font-variant-numeric: tabular-nums;
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--fg);
+  text-transform: none;
 }
 
 .controls {
@@ -234,6 +246,12 @@ button:active {
 button.primary {
   background: var(--accent);
   color: #0a1810;
+}
+
+button.primary.ready {
+  background: var(--accent);
+  color: #0a1810;
+  box-shadow: 0 6px 24px rgba(124, 240, 168, 0.25);
 }
 
 button.primary.paused {

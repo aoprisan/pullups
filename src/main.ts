@@ -1,16 +1,14 @@
-import { EmomTimer, type ViewState, type Phase } from "./timer";
+import { PullupTimer, type ViewState, type Phase } from "./timer";
 import { beepCountdown, beepRepCue, beepDone, unlockAudio } from "./audio";
 
 const REP_OPTIONS = [10, 20] as const;
 const DEFAULT_REPS = 20;
 const INTERVAL_MS = 60_000;
-const COUNTDOWN_MS = 5_000;
 
 let currentReps: number = loadReps();
-let timer = new EmomTimer({
+let timer = new PullupTimer({
   totalReps: currentReps,
   intervalMs: INTERVAL_MS,
-  countdownMs: COUNTDOWN_MS,
 });
 
 const app = document.getElementById("app");
@@ -19,7 +17,7 @@ if (!app) throw new Error("#app not found");
 app.innerHTML = `
   <header class="title">
     <strong>Pullups</strong>
-    <span id="modeLabel">EMOM · ${currentReps} reps · 1 min</span>
+    <span id="modeLabel">${modeLabel(currentReps)}</span>
   </header>
 
   <section class="seg" role="radiogroup" aria-label="Total reps" id="repSelector">
@@ -30,23 +28,23 @@ app.innerHTML = `
   </section>
 
   <section class="rep-display">
-    <div class="big" id="big">0<span class="of"> / ${currentReps}</span></div>
+    <div class="big" id="big">1<span class="of"> / ${currentReps}</span></div>
     <div class="label" id="phaseLabel">Ready</div>
   </section>
 
   <section class="dots" id="dots" aria-label="Rep progression"></section>
 
-  <section class="next-rep">
-    <span class="label">Next rep</span>
-    <span class="value" id="nextRep">—</span>
+  <section class="rest-card" id="restCard">
+    <div class="rest-row">
+      <span class="label" id="restLabel">Ready when you are</span>
+      <span class="value" id="restTime"></span>
+    </div>
+    <div class="bar" id="restBarWrap"><div id="restFill" style="width:0%"></div></div>
   </section>
 
-  <section class="progress">
-    <div class="bar"><div id="progressFill" style="width:0%"></div></div>
-    <div class="meta">
-      <span id="elapsed">0:00</span>
-      <span id="total">${formatClock((currentReps - 1) * INTERVAL_MS)}</span>
-    </div>
+  <section class="meta-line">
+    <span class="label">Elapsed</span>
+    <span class="value" id="elapsed">0:00</span>
   </section>
 
   <section class="controls">
@@ -58,10 +56,11 @@ app.innerHTML = `
 const dotsEl = byId("dots");
 const bigEl = byId("big");
 const phaseLabelEl = byId("phaseLabel");
-const nextRepEl = byId("nextRep");
-const progressFillEl = byId("progressFill");
+const restLabelEl = byId("restLabel");
+const restTimeEl = byId("restTime");
+const restBarWrapEl = byId("restBarWrap");
+const restFillEl = byId("restFill");
 const elapsedEl = byId("elapsed");
-const totalEl = byId("total");
 const modeLabelEl = byId("modeLabel");
 const repSelectorEl = byId("repSelector");
 const primaryBtn = byId("primaryBtn") as HTMLButtonElement;
@@ -83,14 +82,25 @@ repSelectorEl.addEventListener("click", (e) => {
 
 primaryBtn.addEventListener("click", () => {
   unlockAudio();
-  const phase = timer.currentPhase;
   const now = performance.now();
-  if (phase === "idle" || phase === "done") {
-    timer.start(now);
-  } else if (phase === "paused") {
-    timer.resume(now);
-  } else {
-    timer.pause(now);
+  switch (timer.currentPhase) {
+    case "idle":
+    case "done":
+      timer.start(now);
+      beepRepCue();
+      break;
+    case "ready":
+      timer.repDone(now);
+      if (timer.completedReps >= currentReps) {
+        setTimeout(beepDone, 80);
+      }
+      break;
+    case "resting":
+      timer.pause(now);
+      break;
+    case "paused":
+      timer.resume(now);
+      break;
   }
 });
 
@@ -101,17 +111,12 @@ resetBtn.addEventListener("click", () => {
 function frame(now: number) {
   const view = timer.tick(now);
   render(view);
-  if (view.newCountdownTickIndex !== null) {
-    if (view.countdownSecondsRemaining > 0) {
-      beepCountdown();
-    }
+  if (view.newRestCountdownTickIndex !== null) {
+    beepCountdown();
   }
-  if (view.newRepCueIndex !== null) {
+  if (view.newRepReadyIndex !== null) {
     beepRepCue();
     pulseBig();
-    if (view.newRepCueIndex >= currentReps) {
-      setTimeout(beepDone, 200);
-    }
   }
   requestAnimationFrame(frame);
 }
@@ -120,13 +125,11 @@ requestAnimationFrame(frame);
 function setReps(n: number) {
   currentReps = n;
   saveReps(n);
-  timer = new EmomTimer({
+  timer = new PullupTimer({
     totalReps: currentReps,
     intervalMs: INTERVAL_MS,
-    countdownMs: COUNTDOWN_MS,
   });
-  modeLabelEl.textContent = `EMOM · ${currentReps} reps · 1 min`;
-  totalEl.textContent = formatClock((currentReps - 1) * INTERVAL_MS);
+  modeLabelEl.textContent = modeLabel(currentReps);
   syncRepSelector();
   renderDots(0, 0, "idle");
 }
@@ -148,53 +151,56 @@ function syncRepSelector() {
 }
 
 function render(v: ViewState) {
-  if (v.phase === "countdown" || (v.phase === "paused" && v.countdownSecondsRemaining > 0)) {
-    bigEl.textContent = String(v.countdownSecondsRemaining);
-    bigEl.classList.add("countdown");
-    bigEl.classList.remove("done");
-  } else if (v.phase === "done") {
-    bigEl.innerHTML = `${currentReps}<span class="of"> / ${currentReps}</span>`;
-    bigEl.classList.add("done");
-    bigEl.classList.remove("countdown");
-  } else {
-    bigEl.innerHTML = `${v.repsCued}<span class="of"> / ${currentReps}</span>`;
-    bigEl.classList.remove("countdown", "done");
-  }
+  const displayRep = v.phase === "idle" ? 1 : v.currentRepNumber;
+  bigEl.innerHTML = `${displayRep}<span class="of"> / ${currentReps}</span>`;
+  bigEl.classList.toggle("done", v.phase === "done");
 
-  phaseLabelEl.textContent = phaseLabel(v.phase, v.repsCued);
+  phaseLabelEl.textContent = phaseLabel(v);
 
-  if (v.phase === "countdown" || (v.phase === "paused" && v.countdownSecondsRemaining > 0)) {
-    nextRepEl.textContent = `Rep 1 in ${v.countdownSecondsRemaining}s`;
-  } else if (v.phase === "done") {
-    nextRepEl.textContent = "Workout complete";
-  } else if (v.repsCued >= currentReps) {
-    nextRepEl.textContent = "Last rep — finish strong";
-  } else if (v.phase === "idle") {
-    nextRepEl.textContent = "—";
-  } else {
-    nextRepEl.textContent = formatClock(v.secondsToNextRep * 1000);
-  }
+  applyRestCard(v);
 
-  const pct = v.totalMs === 0 ? 0 : Math.min(100, (v.elapsedMs / v.totalMs) * 100);
-  progressFillEl.style.width = `${pct}%`;
-  elapsedEl.textContent = formatClock(v.elapsedMs);
+  elapsedEl.textContent = formatClock(v.totalElapsedMs);
 
-  renderDots(v.repsCued, v.phase === "done" ? currentReps : v.repsCued, v.phase);
+  renderDots(v.repsCompleted, v.currentRepNumber, v.phase);
   syncRepSelector();
 
   primaryBtn.classList.toggle("paused", v.phase === "paused");
+  primaryBtn.classList.toggle("ready", v.phase === "ready");
   primaryBtn.textContent = primaryLabel(v.phase);
   resetBtn.disabled = v.phase === "idle";
 }
 
-function phaseLabel(phase: Phase, repsCued: number): string {
-  switch (phase) {
+function applyRestCard(v: ViewState) {
+  if (v.phase === "resting" || v.phase === "paused") {
+    restLabelEl.textContent = v.phase === "paused" ? "Paused" : `Rest before rep ${v.currentRepNumber}`;
+    restTimeEl.textContent = formatClock(v.secondsRemainingInRest * 1000);
+    restBarWrapEl.style.display = "block";
+    const pct = Math.min(100, (v.restElapsedMs / v.restTotalMs) * 100);
+    restFillEl.style.width = `${pct}%`;
+    return;
+  }
+
+  restBarWrapEl.style.display = "none";
+  restTimeEl.textContent = "";
+  restFillEl.style.width = "0%";
+
+  if (v.phase === "idle") {
+    restLabelEl.textContent = "Ready when you are";
+  } else if (v.phase === "ready") {
+    restLabelEl.textContent = `Do rep ${v.currentRepNumber} — tap when done`;
+  } else if (v.phase === "done") {
+    restLabelEl.textContent = "Workout complete";
+  }
+}
+
+function phaseLabel(v: ViewState): string {
+  switch (v.phase) {
     case "idle":
       return "Ready";
-    case "countdown":
-      return "Get ready…";
-    case "running":
-      return repsCued === 0 ? "Get ready…" : `On rep ${repsCued}`;
+    case "ready":
+      return `On rep ${v.currentRepNumber}`;
+    case "resting":
+      return "Resting";
     case "paused":
       return "Paused";
     case "done":
@@ -206,14 +212,19 @@ function primaryLabel(phase: Phase): string {
   switch (phase) {
     case "idle":
       return "Start";
-    case "countdown":
-    case "running":
+    case "ready":
+      return "Pullup done";
+    case "resting":
       return "Pause";
     case "paused":
       return "Resume";
     case "done":
       return "Restart";
   }
+}
+
+function modeLabel(reps: number): string {
+  return `${reps} reps · 1 min rest`;
 }
 
 function renderDots(filledCount: number, currentRep: number, phase: Phase) {
@@ -227,13 +238,11 @@ function renderDots(filledCount: number, currentRep: number, phase: Phase) {
     }
   }
   const children = dotsEl.children;
+  const highlight = phase === "ready" || phase === "resting" || phase === "paused";
   for (let i = 0; i < currentReps; i++) {
     const el = children[i] as HTMLElement;
     el.classList.toggle("filled", i < filledCount);
-    el.classList.toggle(
-      "current",
-      phase === "running" && i === currentRep - 1 && currentRep < currentReps,
-    );
+    el.classList.toggle("current", highlight && i === currentRep - 1 && filledCount < currentReps);
   }
 }
 
@@ -262,7 +271,7 @@ function loadReps(): number {
     const n = raw === null ? NaN : Number(raw);
     if (REP_OPTIONS.includes(n as (typeof REP_OPTIONS)[number])) return n;
   } catch {
-    // localStorage unavailable — fall through to default
+    // localStorage unavailable — fall through
   }
   return DEFAULT_REPS;
 }
