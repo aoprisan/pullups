@@ -4,6 +4,8 @@ import { beepCountdown, beepRepCue, beepDone, unlockAudio } from "./audio";
 const REP_OPTIONS = [10, 20] as const;
 const DEFAULT_REPS = 20;
 const INTERVAL_MS = 60_000;
+const DIAL_PATH_LENGTH = 100;
+const SVG_NS = "http://www.w3.org/2000/svg";
 
 let currentReps: number = loadReps();
 let timer = new PullupTimer({
@@ -15,58 +17,75 @@ const app = document.getElementById("app");
 if (!app) throw new Error("#app not found");
 
 app.innerHTML = `
-  <header class="title">
-    <strong>Pullups</strong>
-    <span id="modeLabel">${modeLabel(currentReps)}</span>
+  <header class="masthead">
+    <div class="masthead-row">
+      <h1>PULL<span class="accent">·</span>UPS</h1>
+      <div class="masthead-stamp">LOG&nbsp;N°&nbsp;001</div>
+    </div>
+    <div class="masthead-sub" id="modeLabel">${modeLabel(currentReps)}</div>
+    <div class="hatching" aria-hidden="true"></div>
   </header>
 
   <section class="seg" role="radiogroup" aria-label="Total reps" id="repSelector">
     ${REP_OPTIONS.map(
       (n) =>
-        `<button type="button" role="radio" data-reps="${n}" aria-checked="${n === currentReps}">${n}</button>`,
+        `<button type="button" role="radio" data-reps="${n}" aria-checked="${n === currentReps}">${pad2(n)} REPS</button>`,
     ).join("")}
   </section>
 
-  <section class="rep-display">
-    <div class="big" id="big">1<span class="of"> / ${currentReps}</span></div>
-    <div class="label" id="phaseLabel">Ready</div>
-  </section>
-
-  <section class="dots" id="dots" aria-label="Rep progression"></section>
-
-  <section class="rest-card" id="restCard">
-    <div class="rest-row">
-      <span class="label" id="restLabel">Ready when you are</span>
-      <span class="value" id="restTime"></span>
+  <div class="dial-stage">
+    <svg class="dial" id="dial" viewBox="0 0 340 340" aria-hidden="true">
+      <g class="dial-ticks" id="dialTicks"></g>
+      <g class="dial-numerals" id="dialNumerals"></g>
+      <circle class="dial-track" cx="170" cy="170" r="138" />
+      <circle
+        class="dial-fill idle"
+        id="dialFill"
+        cx="170"
+        cy="170"
+        r="138"
+        pathLength="${DIAL_PATH_LENGTH}"
+        stroke-dasharray="${DIAL_PATH_LENGTH} ${DIAL_PATH_LENGTH}"
+        stroke-dashoffset="${DIAL_PATH_LENGTH}"
+      />
+    </svg>
+    <div class="dial-center" id="dialCenter">
+      <div class="eyebrow" id="eyebrow">READY</div>
+      <div class="big-number" id="big">${pad2(1)}</div>
+      <div class="big-number-of" id="bigOf">of ${pad2(currentReps)}</div>
+      <div class="dial-status" id="dialStatus">PRESS START</div>
     </div>
-    <div class="bar" id="restBarWrap"><div id="restFill" style="width:0%"></div></div>
-  </section>
+  </div>
 
-  <section class="meta-line">
-    <span class="label">Elapsed</span>
-    <span class="value" id="elapsed">0:00</span>
-  </section>
+  <section class="tally" id="tally" aria-label="Rep progression"></section>
 
-  <section class="controls">
-    <button class="primary" id="primaryBtn">Start</button>
-    <button class="secondary" id="resetBtn">Reset</button>
-  </section>
+  <div class="meta">
+    <span class="meta-label">Elapsed</span>
+    <span class="meta-value" id="elapsed">0:00</span>
+  </div>
+
+  <div class="controls">
+    <button class="primary idle" id="primaryBtn">START</button>
+    <button class="secondary" id="resetBtn">Reset workout</button>
+  </div>
 `;
 
-const dotsEl = byId("dots");
+const dialEl = byId("dial");
+const dialFillEl = byId("dialFill") as unknown as SVGCircleElement;
+const dialCenterEl = byId("dialCenter");
+const eyebrowEl = byId("eyebrow");
 const bigEl = byId("big");
-const phaseLabelEl = byId("phaseLabel");
-const restLabelEl = byId("restLabel");
-const restTimeEl = byId("restTime");
-const restBarWrapEl = byId("restBarWrap");
-const restFillEl = byId("restFill");
+const bigOfEl = byId("bigOf");
+const dialStatusEl = byId("dialStatus");
+const tallyEl = byId("tally");
 const elapsedEl = byId("elapsed");
 const modeLabelEl = byId("modeLabel");
 const repSelectorEl = byId("repSelector");
 const primaryBtn = byId("primaryBtn") as HTMLButtonElement;
 const resetBtn = byId("resetBtn") as HTMLButtonElement;
 
-renderDots(0, 0, "idle");
+buildDialDecorations();
+renderTally(0);
 
 repSelectorEl.addEventListener("click", (e) => {
   const target = e.target;
@@ -91,6 +110,7 @@ primaryBtn.addEventListener("click", () => {
       break;
     case "ready":
       timer.repDone(now);
+      pulseBig();
       if (timer.completedReps >= currentReps) {
         setTimeout(beepDone, 80);
       }
@@ -130,8 +150,9 @@ function setReps(n: number) {
     intervalMs: INTERVAL_MS,
   });
   modeLabelEl.textContent = modeLabel(currentReps);
+  bigOfEl.textContent = `of ${pad2(currentReps)}`;
+  renderTally(0);
   syncRepSelector();
-  renderDots(0, 0, "idle");
 }
 
 function canChangeReps(): boolean {
@@ -151,105 +172,203 @@ function syncRepSelector() {
 }
 
 function render(v: ViewState) {
-  const displayRep = v.phase === "idle" ? 1 : v.currentRepNumber;
-  bigEl.innerHTML = `${displayRep}<span class="of"> / ${currentReps}</span>`;
-  bigEl.classList.toggle("done", v.phase === "done");
+  const isRestState = v.phase === "resting" || v.phase === "paused";
 
-  phaseLabelEl.textContent = phaseLabel(v);
+  if (isRestState) {
+    bigEl.textContent = formatClock(v.secondsRemainingInRest * 1000);
+    bigEl.classList.add("timer");
+    bigEl.classList.remove("done-state");
+    bigOfEl.style.visibility = "hidden";
+  } else {
+    bigEl.textContent = pad2(displayRepNumber(v));
+    bigEl.classList.remove("timer");
+    bigEl.classList.toggle("done-state", v.phase === "done");
+    bigOfEl.style.visibility = "visible";
+  }
 
-  applyRestCard(v);
+  eyebrowEl.textContent = eyebrowLabel(v);
+  dialStatusEl.textContent = statusLabel(v);
+
+  applyDialFill(v);
 
   elapsedEl.textContent = formatClock(v.totalElapsedMs);
 
-  renderDots(v.repsCompleted, v.currentRepNumber, v.phase);
+  renderTally(v.repsCompleted);
+  highlightCurrentTally(v);
   syncRepSelector();
 
-  primaryBtn.classList.toggle("paused", v.phase === "paused");
-  primaryBtn.classList.toggle("ready", v.phase === "ready");
+  primaryBtn.className = `primary ${v.phase}`;
   primaryBtn.textContent = primaryLabel(v.phase);
   resetBtn.disabled = v.phase === "idle";
 }
 
-function applyRestCard(v: ViewState) {
-  if (v.phase === "resting" || v.phase === "paused") {
-    restLabelEl.textContent = v.phase === "paused" ? "Paused" : `Rest before rep ${v.currentRepNumber}`;
-    restTimeEl.textContent = formatClock(v.secondsRemainingInRest * 1000);
-    restBarWrapEl.style.display = "block";
-    const pct = Math.min(100, (v.restElapsedMs / v.restTotalMs) * 100);
-    restFillEl.style.width = `${pct}%`;
-    return;
-  }
+function displayRepNumber(v: ViewState): number {
+  if (v.phase === "idle") return 1;
+  if (v.phase === "done") return currentReps;
+  return v.currentRepNumber;
+}
 
-  restBarWrapEl.style.display = "none";
-  restTimeEl.textContent = "";
-  restFillEl.style.width = "0%";
-
-  if (v.phase === "idle") {
-    restLabelEl.textContent = "Ready when you are";
-  } else if (v.phase === "ready") {
-    restLabelEl.textContent = `Do rep ${v.currentRepNumber} — tap when done`;
-  } else if (v.phase === "done") {
-    restLabelEl.textContent = "Workout complete";
+function eyebrowLabel(v: ViewState): string {
+  switch (v.phase) {
+    case "idle":
+      return "READY";
+    case "ready":
+      return "REP";
+    case "resting":
+      return "REST";
+    case "paused":
+      return "PAUSED";
+    case "done":
+      return "DONE";
   }
 }
 
-function phaseLabel(v: ViewState): string {
+function statusLabel(v: ViewState): string {
   switch (v.phase) {
     case "idle":
-      return "Ready";
+      return "PRESS START";
     case "ready":
-      return `On rep ${v.currentRepNumber}`;
+      return v.currentRepNumber >= currentReps
+        ? "LAST ONE · TAP WHEN DONE"
+        : "TAP WHEN PULLUP DONE";
     case "resting":
-      return "Resting";
+      return `NEXT · REP ${pad2(v.currentRepNumber)}`;
     case "paused":
-      return "Paused";
+      return `RESUME · REP ${pad2(v.currentRepNumber)} NEXT`;
     case "done":
-      return "Done — nice work";
+      return "NICE WORK";
   }
 }
 
 function primaryLabel(phase: Phase): string {
   switch (phase) {
     case "idle":
-      return "Start";
+      return "START";
     case "ready":
-      return "Pullup done";
+      return "PULLUP DONE";
     case "resting":
-      return "Pause";
+      return "PAUSE";
     case "paused":
-      return "Resume";
+      return "RESUME";
     case "done":
-      return "Restart";
+      return "RESTART";
   }
 }
 
 function modeLabel(reps: number): string {
-  return `${reps} reps · 1 min rest`;
+  return `${pad2(reps)} reps · 60 second rest · one minute on the minute`;
 }
 
-function renderDots(filledCount: number, currentRep: number, phase: Phase) {
-  if (dotsEl.childElementCount !== currentReps) {
-    dotsEl.innerHTML = "";
-    for (let i = 0; i < currentReps; i++) {
-      const d = document.createElement("div");
-      d.className = "dot";
-      d.setAttribute("aria-label", `Rep ${i + 1}`);
-      dotsEl.appendChild(d);
-    }
-  }
-  const children = dotsEl.children;
-  const highlight = phase === "ready" || phase === "resting" || phase === "paused";
-  for (let i = 0; i < currentReps; i++) {
-    const el = children[i] as HTMLElement;
-    el.classList.toggle("filled", i < filledCount);
-    el.classList.toggle("current", highlight && i === currentRep - 1 && filledCount < currentReps);
+function applyDialFill(v: ViewState) {
+  const fill = dialFillEl;
+  fill.classList.remove("idle", "ready", "resting", "paused", "done");
+  fill.classList.add(v.phase);
+
+  if (v.phase === "resting" || v.phase === "paused") {
+    const restRemaining = Math.max(0, v.restTotalMs - v.restElapsedMs);
+    const remainingFraction = restRemaining / v.restTotalMs;
+    const offset = (1 - remainingFraction) * DIAL_PATH_LENGTH;
+    fill.setAttribute("stroke-dashoffset", offset.toFixed(2));
+  } else {
+    fill.setAttribute("stroke-dashoffset", DIAL_PATH_LENGTH.toString());
   }
 }
 
 function pulseBig() {
-  bigEl.classList.remove("pulse");
-  void bigEl.offsetWidth;
-  bigEl.classList.add("pulse");
+  dialCenterEl.classList.remove("pulse-now");
+  void dialCenterEl.offsetWidth;
+  dialCenterEl.classList.add("pulse-now");
+}
+
+function buildDialDecorations() {
+  const ticksGroup = byId("dialTicks");
+  const numeralsGroup = byId("dialNumerals");
+  const cx = 170;
+  const cy = 170;
+
+  for (let i = 0; i < 60; i++) {
+    const angle = (i / 60) * Math.PI * 2 - Math.PI / 2;
+    const isMajor = i % 5 === 0;
+    const inner = isMajor ? 156 : 160;
+    const outer = isMajor ? 170 : 166;
+    const x1 = cx + Math.cos(angle) * inner;
+    const y1 = cy + Math.sin(angle) * inner;
+    const x2 = cx + Math.cos(angle) * outer;
+    const y2 = cy + Math.sin(angle) * outer;
+    const line = document.createElementNS(SVG_NS, "line");
+    line.setAttribute("x1", x1.toFixed(2));
+    line.setAttribute("y1", y1.toFixed(2));
+    line.setAttribute("x2", x2.toFixed(2));
+    line.setAttribute("y2", y2.toFixed(2));
+    line.setAttribute("class", `dial-tick${isMajor ? " major" : ""}`);
+    ticksGroup.appendChild(line);
+  }
+
+  const numerals: Array<{ at: number; label: string }> = [
+    { at: 0, label: "60" },
+    { at: 15, label: "15" },
+    { at: 30, label: "30" },
+    { at: 45, label: "45" },
+  ];
+  for (const { at, label } of numerals) {
+    const angle = (at / 60) * Math.PI * 2 - Math.PI / 2;
+    const r = 145;
+    const x = cx + Math.cos(angle) * r;
+    const y = cy + Math.sin(angle) * r;
+    const text = document.createElementNS(SVG_NS, "text");
+    text.setAttribute("x", x.toFixed(2));
+    text.setAttribute("y", y.toFixed(2));
+    text.setAttribute("class", "dial-numeral");
+    text.textContent = label;
+    numeralsGroup.appendChild(text);
+  }
+
+  void dialEl;
+}
+
+function renderTally(filledCount: number) {
+  const groupCount = currentReps / 5;
+  if (tallyEl.childElementCount !== groupCount) {
+    tallyEl.innerHTML = "";
+    for (let g = 0; g < groupCount; g++) {
+      const group = document.createElement("div");
+      group.className = "tally-group";
+      for (let s = 0; s < 4; s++) {
+        const stroke = document.createElement("div");
+        stroke.className = "stroke";
+        group.appendChild(stroke);
+      }
+      const slash = document.createElement("div");
+      slash.className = "slash";
+      group.appendChild(slash);
+      tallyEl.appendChild(group);
+    }
+  }
+
+  const groups = tallyEl.children;
+  for (let g = 0; g < groupCount; g++) {
+    const group = groups[g] as HTMLElement;
+    const base = g * 5;
+    const children = group.children;
+    for (let s = 0; s < 4; s++) {
+      (children[s] as HTMLElement).classList.toggle("filled", base + s < filledCount);
+    }
+    (children[4] as HTMLElement).classList.toggle("filled", base + 4 < filledCount);
+  }
+}
+
+function highlightCurrentTally(v: ViewState) {
+  const highlight = v.phase === "ready" || v.phase === "resting" || v.phase === "paused";
+  const idx = highlight && v.currentRepNumber <= currentReps ? v.currentRepNumber - 1 : -1;
+  const groupIdx = idx >= 0 ? Math.floor(idx / 5) : -1;
+  const groups = tallyEl.children;
+  for (let g = 0; g < groups.length; g++) {
+    (groups[g] as HTMLElement).classList.toggle("current", g === groupIdx);
+  }
+}
+
+function pad2(n: number): string {
+  return Math.max(0, Math.min(99, n)).toString().padStart(2, "0");
 }
 
 function formatClock(ms: number): string {
@@ -271,7 +390,7 @@ function loadReps(): number {
     const n = raw === null ? NaN : Number(raw);
     if (REP_OPTIONS.includes(n as (typeof REP_OPTIONS)[number])) return n;
   } catch {
-    // localStorage unavailable — fall through
+    // localStorage unavailable
   }
   return DEFAULT_REPS;
 }
