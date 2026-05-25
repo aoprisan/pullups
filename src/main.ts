@@ -81,6 +81,7 @@ app.innerHTML = `
     <button class="primary idle" id="primaryBtn">START</button>
     <button class="secondary" id="resetBtn">Reset workout</button>
     <button class="secondary update" id="updateBtn" data-state="idle">Update app</button>
+    <div class="build-stamp" id="buildStamp"></div>
   </div>
 `;
 
@@ -98,9 +99,11 @@ const repSelectorEl = byId("repSelector");
 const primaryBtn = byId("primaryBtn") as HTMLButtonElement;
 const resetBtn = byId("resetBtn") as HTMLButtonElement;
 const updateBtn = byId("updateBtn") as HTMLButtonElement;
+const buildStampEl = byId("buildStamp");
 
 buildDialDecorations();
 renderTally(0);
+renderBuildStamp();
 
 repSelectorEl.addEventListener("click", (e) => {
   const target = e.target;
@@ -222,6 +225,23 @@ function setUpdateState(state: UpdateState) {
 function reloadForUpdate() {
   setUpdateState("updating");
   window.location.reload();
+}
+
+function renderBuildStamp() {
+  const date = new Date(__BUILD_TIME__);
+  if (Number.isNaN(date.getTime())) {
+    buildStampEl.textContent = "";
+    return;
+  }
+  const stamp = new Intl.DateTimeFormat(undefined, {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
+  buildStampEl.textContent = `Build · ${stamp}`;
+  buildStampEl.title = date.toISOString();
 }
 
 function frame(now: number) {

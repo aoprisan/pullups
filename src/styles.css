@@ -569,6 +569,17 @@ button.secondary.update[data-state="ready"] {
   text-decoration-color: var(--signal);
 }
 
+.build-stamp {
+  font-family: var(--font-mono);
+  font-weight: 500;
+  font-size: 9px;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  text-align: center;
+  color: var(--ink-faint);
+  padding-top: 2px;
+}
+
 /* ───────────────────────── ANIMATIONS ───────────────────────── */
 
 @keyframes rise {

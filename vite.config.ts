@@ -7,6 +7,10 @@ const base = "/pullups/";
 
 export default defineConfig({
   base,
+  // Stamped at build time so the UI can show which version is running.
+  define: {
+    __BUILD_TIME__: JSON.stringify(new Date().toISOString()),
+  },
   build: {
     target: "es2022",
     sourcemap: true,
