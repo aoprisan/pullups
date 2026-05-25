@@ -35,6 +35,18 @@ app.innerHTML = `
 
   <div class="dial-stage">
     <svg class="dial" id="dial" viewBox="0 0 340 340" aria-hidden="true">
+      <defs>
+        <radialGradient id="dialFace" cx="50%" cy="40%" r="66%">
+          <stop offset="0%" stop-color="#f4eddc" />
+          <stop offset="58%" stop-color="#e9dec3" />
+          <stop offset="100%" stop-color="#d6c79f" />
+        </radialGradient>
+        <filter id="dialEmboss" x="-25%" y="-25%" width="150%" height="150%">
+          <feDropShadow dx="0" dy="3" stdDeviation="5" flood-color="#15110d" flood-opacity="0.17" />
+        </filter>
+      </defs>
+      <circle class="dial-face" cx="170" cy="170" r="154" fill="url(#dialFace)" filter="url(#dialEmboss)" />
+      <circle class="dial-rim" cx="170" cy="170" r="154" />
       <g class="dial-ticks" id="dialTicks"></g>
       <g class="dial-numerals" id="dialNumerals"></g>
       <circle class="dial-track" cx="170" cy="170" r="138" />

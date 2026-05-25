@@ -7,7 +7,7 @@
   --ink-faint: rgba(21, 17, 13, 0.22);
   --brick: #6e1f1a;
   --signal: #d6422b;
-  --mustard: #c9962a;
+  --mustard: #bd8a1c;
   --shadow: rgba(21, 17, 13, 0.18);
 
   --font-display: "Bungee", ui-sans-serif, system-ui, sans-serif;
@@ -38,6 +38,17 @@ body {
 body {
   position: relative;
   overflow-x: hidden;
+}
+
+/* Soft vignette so the cardboard has depth toward the edges */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background:
+    radial-gradient(135% 95% at 50% 14%, transparent 52%, rgba(21, 17, 13, 0.11) 100%);
 }
 
 .grain {
@@ -84,11 +95,12 @@ body {
 .masthead h1 {
   margin: 0;
   font-family: var(--font-display);
-  font-size: clamp(54px, 17vw, 96px);
+  font-size: clamp(40px, 12.5vw, 82px);
   letter-spacing: -0.005em;
   line-height: 0.82;
   color: var(--ink);
   text-transform: uppercase;
+  min-width: 0;
 }
 
 .masthead h1 .accent {
@@ -194,11 +206,21 @@ body {
   overflow: visible;
 }
 
+/* .dial-face: gradient fill + emboss filter are applied inline on the SVG circle */
+
+.dial-rim {
+  fill: none;
+  stroke: var(--ink);
+  stroke-width: 1.4;
+  opacity: 0.2;
+}
+
 .dial-track {
   fill: none;
   stroke: var(--ink);
   stroke-width: 1.5;
-  opacity: 0.18;
+  opacity: 0.16;
+  stroke-dasharray: 1.5 5;
 }
 
 .dial-fill {
@@ -208,6 +230,7 @@ body {
   stroke-linecap: butt;
   transform: rotate(-90deg);
   transform-origin: center;
+  filter: drop-shadow(0 1px 1px rgba(21, 17, 13, 0.28));
   transition: stroke-dashoffset 220ms linear, stroke 200ms ease;
 }
 
