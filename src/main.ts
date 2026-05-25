@@ -1,3 +1,4 @@
+import { registerSW } from "virtual:pwa-register";
 import { PullupTimer, type ViewState, type Phase } from "./timer";
 import { beepCountdown, beepRepCue, beepDone, unlockAudio } from "./audio";
 
@@ -79,6 +80,7 @@ app.innerHTML = `
   <div class="controls">
     <button class="primary idle" id="primaryBtn">START</button>
     <button class="secondary" id="resetBtn">Reset workout</button>
+    <button class="secondary update" id="updateBtn" data-state="idle">Update app</button>
   </div>
 `;
 
@@ -95,6 +97,7 @@ const modeLabelEl = byId("modeLabel");
 const repSelectorEl = byId("repSelector");
 const primaryBtn = byId("primaryBtn") as HTMLButtonElement;
 const resetBtn = byId("resetBtn") as HTMLButtonElement;
+const updateBtn = byId("updateBtn") as HTMLButtonElement;
 
 buildDialDecorations();
 renderTally(0);
@@ -139,6 +142,87 @@ primaryBtn.addEventListener("click", () => {
 resetBtn.addEventListener("click", () => {
   timer.reset();
 });
+
+// ───────────────────────── APP UPDATES ─────────────────────────
+// We register the service worker ourselves (importing virtual:pwa-register
+// tells the plugin to skip its auto-injected registration) so updates flow
+// through the "Update app" button instead of reloading the page from under
+// you. In autoUpdate mode the new worker has already taken control by the
+// time onNeedReload fires, so a plain reload is enough to pick up new assets.
+type UpdateState = "idle" | "checking" | "current" | "ready" | "updating";
+
+const UPDATE_LABELS: Record<UpdateState, string> = {
+  idle: "Update app",
+  checking: "Checking…",
+  current: "Up to date",
+  ready: "Update ready · tap",
+  updating: "Updating…",
+};
+
+let swRegistration: ServiceWorkerRegistration | undefined;
+let userRequestedUpdate = false;
+let revertTimer: number | undefined;
+
+registerSW({
+  immediate: true,
+  onRegisteredSW(_swUrl, registration) {
+    swRegistration = registration;
+  },
+  onNeedReload() {
+    // A newer version has activated. If the user asked for it, apply it now;
+    // otherwise just surface it so we never interrupt a workout in progress.
+    if (userRequestedUpdate) reloadForUpdate();
+    else setUpdateState("ready");
+  },
+});
+
+updateBtn.addEventListener("click", async () => {
+  const state = updateBtn.dataset.state;
+  if (state === "ready") {
+    // Update was detected in the background — apply it on demand.
+    reloadForUpdate();
+    return;
+  }
+  if (state === "checking" || state === "updating") return;
+
+  userRequestedUpdate = true;
+  setUpdateState("checking");
+
+  if (!swRegistration) {
+    // No service worker yet — a plain reload is the best we can do.
+    window.location.reload();
+    return;
+  }
+  try {
+    await swRegistration.update();
+    // If a new worker is downloading/activating, onNeedReload reloads the page.
+    // Otherwise we're already on the latest build.
+    if (!swRegistration.installing && !swRegistration.waiting) {
+      userRequestedUpdate = false;
+      setUpdateState("current");
+    }
+  } catch {
+    userRequestedUpdate = false;
+    setUpdateState("idle");
+  }
+});
+
+function setUpdateState(state: UpdateState) {
+  if (revertTimer !== undefined) {
+    clearTimeout(revertTimer);
+    revertTimer = undefined;
+  }
+  updateBtn.dataset.state = state;
+  updateBtn.textContent = UPDATE_LABELS[state];
+  if (state === "current") {
+    revertTimer = window.setTimeout(() => setUpdateState("idle"), 2500);
+  }
+}
+
+function reloadForUpdate() {
+  setUpdateState("updating");
+  window.location.reload();
+}
 
 function frame(now: number) {
   const view = timer.tick(now);

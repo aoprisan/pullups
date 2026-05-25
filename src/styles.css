@@ -542,6 +542,33 @@ button.secondary:disabled {
   text-decoration: none;
 }
 
+button.secondary.update {
+  font-size: 10px;
+  letter-spacing: 0.3em;
+  color: var(--ink-soft);
+  padding: 6px 0 2px;
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 5px;
+}
+
+button.secondary.update[data-state="checking"],
+button.secondary.update[data-state="updating"] {
+  color: var(--ink-soft);
+  text-decoration: none;
+  cursor: progress;
+}
+
+button.secondary.update[data-state="current"] {
+  color: var(--ink-faint);
+  text-decoration: none;
+}
+
+button.secondary.update[data-state="ready"] {
+  color: var(--signal);
+  font-weight: 700;
+  text-decoration-color: var(--signal);
+}
+
 /* ───────────────────────── ANIMATIONS ───────────────────────── */
 
 @keyframes rise {
