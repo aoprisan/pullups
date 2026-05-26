@@ -13,6 +13,7 @@ const BANDS = [
   { id: "yellow", label: "Yellow", color: "#d9b020" },
   { id: "orange", label: "Orange", color: "#d97b29" },
   { id: "red", label: "Red", color: "#c0392b" },
+  { id: "none", label: "None", color: "transparent" },
 ] as const;
 type BandId = (typeof BANDS)[number]["id"];
 const BAND_IDS = BANDS.map((b) => b.id) as readonly BandId[];
@@ -63,7 +64,7 @@ app.innerHTML = `
     <div class="bands-row">
       ${BANDS.map(
         (b) =>
-          `<button type="button" role="radio" class="band-chip" data-band="${b.id}" aria-checked="${b.id === currentBand}" aria-label="${b.label} band" style="--band:${b.color}"><span class="band-dot"></span><span class="band-name">${b.label}</span></button>`,
+          `<button type="button" role="radio" class="band-chip" data-band="${b.id}" aria-checked="${b.id === currentBand}" aria-label="${bandTitle(b.id)}" style="--band:${b.color}"><span class="band-dot${b.id === "none" ? " none" : ""}"></span><span class="band-name">${b.label}</span></button>`,
       ).join("")}
     </div>
   </section>
@@ -689,7 +690,7 @@ function renderLog() {
     .map(
       (s) => `
       <li class="log-item">
-        <span class="log-band" style="--band:${bandColor(s.band)}" title="${bandLabel(s.band)} band"></span>
+        <span class="log-band${s.band === "none" ? " none" : ""}" style="--band:${bandColor(s.band)}" title="${bandTitle(s.band)}"></span>
         <span class="log-reps">${pad2(s.completedReps)}/${pad2(s.reps)}</span>
         <span class="log-date">${formatLogDate(s.date)}</span>
         <span class="log-time">${formatClock(s.elapsedMs)}</span>
@@ -718,6 +719,10 @@ function bandColor(id: BandId): string {
 
 function bandLabel(id: BandId): string {
   return (BANDS.find((b) => b.id === id) ?? BANDS[0]).label;
+}
+
+function bandTitle(id: BandId): string {
+  return id === "none" ? "No band" : `${bandLabel(id)} band`;
 }
 
 function formatLogDate(iso: string): string {
