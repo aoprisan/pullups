@@ -207,8 +207,8 @@ body::before {
 
 .bands-row {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 8px;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 7px;
 }
 
 .band-chip {
@@ -217,7 +217,7 @@ body::before {
   flex-direction: column;
   align-items: center;
   gap: 6px;
-  padding: 10px 4px 8px;
+  padding: 10px 3px 8px;
   border: 2.5px solid var(--ink);
   background: var(--paper-deep);
   cursor: pointer;
@@ -241,11 +241,35 @@ body::before {
   box-shadow: inset 0 -3px 0 rgba(21, 17, 13, 0.18);
 }
 
+/* "No band" — a hollow disc with a slash, the universal "none" mark. */
+.band-dot.none,
+.log-band.none {
+  background: transparent;
+  background-image: linear-gradient(
+    to top right,
+    transparent calc(50% - 1.25px),
+    var(--ink) calc(50% - 1.25px),
+    var(--ink) calc(50% + 1.25px),
+    transparent calc(50% + 1.25px)
+  );
+  box-shadow: none;
+}
+
+.band-chip[aria-checked="true"] .band-dot.none {
+  background-image: linear-gradient(
+    to top right,
+    transparent calc(50% - 1.25px),
+    var(--paper) calc(50% - 1.25px),
+    var(--paper) calc(50% + 1.25px),
+    transparent calc(50% + 1.25px)
+  );
+}
+
 .band-name {
   font-family: var(--font-mono);
   font-weight: 700;
   font-size: 9px;
-  letter-spacing: 0.18em;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--ink-soft);
 }
