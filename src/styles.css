@@ -187,6 +187,91 @@ body::before {
   color: var(--ink);
 }
 
+/* ───────────────────────── BANDS ───────────────────────── */
+
+.bands {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  animation: rise 560ms cubic-bezier(0.16, 0.84, 0.36, 1) 150ms both;
+}
+
+.bands-caption {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 10px;
+  letter-spacing: 0.32em;
+  text-transform: uppercase;
+  color: var(--brick);
+}
+
+.bands-row {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+
+.band-chip {
+  font: inherit;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 4px 8px;
+  border: 2.5px solid var(--ink);
+  background: var(--paper-deep);
+  cursor: pointer;
+  transition:
+    transform 90ms ease,
+    box-shadow 90ms ease,
+    background 140ms ease;
+  touch-action: manipulation;
+}
+
+.band-chip:active {
+  transform: translateY(1px);
+}
+
+.band-dot {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--band);
+  border: 2.5px solid var(--ink);
+  box-shadow: inset 0 -3px 0 rgba(21, 17, 13, 0.18);
+}
+
+.band-name {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 9px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+.band-chip[aria-checked="true"] {
+  background: var(--ink);
+  box-shadow: 3px 3px 0 0 var(--ink);
+}
+
+.band-chip[aria-checked="true"] .band-name {
+  color: var(--paper);
+}
+
+.band-chip[aria-checked="true"] .band-dot {
+  border-color: var(--paper);
+}
+
+.band-chip:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.band-chip:not([aria-checked="true"]):not(:disabled):hover {
+  background: var(--paper-ash);
+}
+
 /* ───────────────────────── DIAL ───────────────────────── */
 
 .dial-stage {
@@ -461,6 +546,123 @@ body::before {
   color: var(--ink);
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.01em;
+}
+
+/* ───────────────────────── SESSION LOG ───────────────────────── */
+
+.log {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  animation: rise 680ms cubic-bezier(0.16, 0.84, 0.36, 1) 320ms both;
+}
+
+.log-empty {
+  font-family: var(--font-mono);
+  font-weight: 500;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--ink-soft);
+  border: 2px dashed var(--ink-faint);
+  padding: 12px 14px;
+  text-align: center;
+}
+
+.log-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.log-title {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 10px;
+  letter-spacing: 0.32em;
+  text-transform: uppercase;
+  color: var(--brick);
+}
+
+.log-clear {
+  font: inherit;
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 9px;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  background: transparent;
+  color: var(--ink-soft);
+  border: none;
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 4px;
+  padding: 2px 0;
+}
+
+.log-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.log-item {
+  display: grid;
+  grid-template-columns: auto auto 1fr auto;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 2px;
+  border-top: 1.5px solid var(--ink-faint);
+  font-family: var(--font-mono);
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--ink);
+}
+
+.log-item:first-child {
+  border-top: none;
+}
+
+.log-band {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--band);
+  border: 2px solid var(--ink);
+}
+
+.log-reps {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+}
+
+.log-date {
+  font-weight: 500;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--ink-soft);
+  text-transform: uppercase;
+}
+
+.log-time {
+  font-family: var(--font-impact);
+  font-size: 16px;
+  font-variant-numeric: tabular-nums;
+  color: var(--brick);
+  justify-self: end;
+}
+
+.log-more {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  text-align: center;
+  padding-top: 2px;
 }
 
 /* ───────────────────────── CONTROLS ───────────────────────── */

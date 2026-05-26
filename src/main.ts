@@ -8,7 +8,31 @@ const INTERVAL_MS = 60_000;
 const DIAL_PATH_LENGTH = 100;
 const SVG_NS = "http://www.w3.org/2000/svg";
 
+const BANDS = [
+  { id: "green", label: "Green", color: "#4f8a3d" },
+  { id: "yellow", label: "Yellow", color: "#d9b020" },
+  { id: "orange", label: "Orange", color: "#d97b29" },
+  { id: "red", label: "Red", color: "#c0392b" },
+] as const;
+type BandId = (typeof BANDS)[number]["id"];
+const BAND_IDS = BANDS.map((b) => b.id) as readonly BandId[];
+const DEFAULT_BAND: BandId = "green";
+
+interface Session {
+  date: string;
+  reps: number;
+  band: BandId;
+  elapsedMs: number;
+  completedReps: number;
+}
+const SESSIONS_KEY = "pullups.sessions";
+const MAX_SESSIONS = 50;
+const LOG_DISPLAY_LIMIT = 6;
+
 let currentReps: number = loadReps();
+let currentBand: BandId = loadBand();
+let sessions: Session[] = loadSessions();
+let prevRenderedPhase: Phase = "idle";
 let timer = new PullupTimer({
   totalReps: currentReps,
   intervalMs: INTERVAL_MS,
@@ -21,7 +45,7 @@ app.innerHTML = `
   <header class="masthead">
     <div class="masthead-row">
       <h1>PULL<span class="accent">·</span>UPS</h1>
-      <div class="masthead-stamp">LOG&nbsp;N°&nbsp;001</div>
+      <div class="masthead-stamp" id="logNumber">LOG&nbsp;N°&nbsp;${pad3(sessions.length + 1)}</div>
     </div>
     <div class="masthead-sub" id="modeLabel">${modeLabel(currentReps)}</div>
     <div class="hatching" aria-hidden="true"></div>
@@ -32,6 +56,16 @@ app.innerHTML = `
       (n) =>
         `<button type="button" role="radio" data-reps="${n}" aria-checked="${n === currentReps}">${pad2(n)} REPS</button>`,
     ).join("")}
+  </section>
+
+  <section class="bands" id="bandSelector" role="radiogroup" aria-label="Resistance band">
+    <div class="bands-caption">Resistance band</div>
+    <div class="bands-row">
+      ${BANDS.map(
+        (b) =>
+          `<button type="button" role="radio" class="band-chip" data-band="${b.id}" aria-checked="${b.id === currentBand}" aria-label="${b.label} band" style="--band:${b.color}"><span class="band-dot"></span><span class="band-name">${b.label}</span></button>`,
+      ).join("")}
+    </div>
   </section>
 
   <div class="dial-stage">
@@ -77,6 +111,8 @@ app.innerHTML = `
     <span class="meta-value" id="elapsed">0:00</span>
   </div>
 
+  <section class="log" id="log" aria-label="Session log"></section>
+
   <div class="controls">
     <button class="primary idle" id="primaryBtn">START</button>
     <button class="secondary" id="resetBtn">Reset workout</button>
@@ -96,6 +132,9 @@ const tallyEl = byId("tally");
 const elapsedEl = byId("elapsed");
 const modeLabelEl = byId("modeLabel");
 const repSelectorEl = byId("repSelector");
+const bandSelectorEl = byId("bandSelector");
+const logEl = byId("log");
+const logNumberEl = byId("logNumber");
 const primaryBtn = byId("primaryBtn") as HTMLButtonElement;
 const resetBtn = byId("resetBtn") as HTMLButtonElement;
 const updateBtn = byId("updateBtn") as HTMLButtonElement;
@@ -104,6 +143,7 @@ const buildStampEl = byId("buildStamp");
 buildDialDecorations();
 renderTally(0);
 renderBuildStamp();
+renderLog();
 
 repSelectorEl.addEventListener("click", (e) => {
   const target = e.target;
@@ -115,6 +155,30 @@ repSelectorEl.addEventListener("click", (e) => {
   if (next === currentReps) return;
   if (!canChangeReps()) return;
   setReps(next);
+});
+
+bandSelectorEl.addEventListener("click", (e) => {
+  const target = e.target;
+  if (!(target instanceof HTMLElement)) return;
+  const btn = target.closest<HTMLButtonElement>("button[data-band]");
+  if (!btn || btn.disabled) return;
+  const next = btn.dataset.band as BandId | undefined;
+  if (!next || !BAND_IDS.includes(next)) return;
+  if (next === currentBand) return;
+  if (!canChangeReps()) return;
+  setBand(next);
+});
+
+logEl.addEventListener("click", (e) => {
+  const target = e.target;
+  if (!(target instanceof HTMLElement)) return;
+  if (!target.closest("#clearLogBtn")) return;
+  if (sessions.length === 0) return;
+  if (!window.confirm("Clear the entire session log?")) return;
+  sessions = [];
+  saveSessions(sessions);
+  renderLog();
+  updateLogNumber();
 });
 
 primaryBtn.addEventListener("click", () => {
@@ -269,6 +333,13 @@ function setReps(n: number) {
   bigOfEl.textContent = `of ${pad2(currentReps)}`;
   renderTally(0);
   syncRepSelector();
+  syncBandSelector();
+}
+
+function setBand(id: BandId) {
+  currentBand = id;
+  saveBand(id);
+  syncBandSelector();
 }
 
 function canChangeReps(): boolean {
@@ -287,7 +358,24 @@ function syncRepSelector() {
   }
 }
 
+function syncBandSelector() {
+  const canChange = canChangeReps();
+  for (const btn of bandSelectorEl.querySelectorAll<HTMLButtonElement>("button[data-band]")) {
+    const selected = btn.dataset.band === currentBand;
+    btn.setAttribute("aria-checked", String(selected));
+    btn.classList.toggle("active", selected);
+    // Keep the chosen band visible while a workout is in progress; only the
+    // alternatives are locked out.
+    btn.disabled = !canChange && !selected;
+  }
+}
+
 function render(v: ViewState) {
+  if (v.phase === "done" && prevRenderedPhase !== "done") {
+    recordSession(v);
+  }
+  prevRenderedPhase = v.phase;
+
   const isRestState = v.phase === "resting" || v.phase === "paused";
 
   if (isRestState) {
@@ -312,6 +400,7 @@ function render(v: ViewState) {
   renderTally(v.repsCompleted);
   highlightCurrentTally(v);
   syncRepSelector();
+  syncBandSelector();
 
   primaryBtn.className = `primary ${v.phase}`;
   primaryBtn.textContent = primaryLabel(v.phase);
@@ -517,4 +606,131 @@ function saveReps(n: number) {
   } catch {
     // ignore
   }
+}
+
+function loadBand(): BandId {
+  try {
+    const raw = localStorage.getItem("pullups.band");
+    if (raw !== null && BAND_IDS.includes(raw as BandId)) return raw as BandId;
+  } catch {
+    // localStorage unavailable
+  }
+  return DEFAULT_BAND;
+}
+
+function saveBand(id: BandId) {
+  try {
+    localStorage.setItem("pullups.band", id);
+  } catch {
+    // ignore
+  }
+}
+
+function loadSessions(): Session[] {
+  try {
+    const raw = localStorage.getItem(SESSIONS_KEY);
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(isSession);
+  } catch {
+    return [];
+  }
+}
+
+function isSession(x: unknown): x is Session {
+  if (typeof x !== "object" || x === null) return false;
+  const s = x as Record<string, unknown>;
+  return (
+    typeof s.date === "string" &&
+    typeof s.reps === "number" &&
+    typeof s.band === "string" &&
+    BAND_IDS.includes(s.band as BandId) &&
+    typeof s.elapsedMs === "number" &&
+    typeof s.completedReps === "number"
+  );
+}
+
+function saveSessions(list: Session[]) {
+  try {
+    localStorage.setItem(SESSIONS_KEY, JSON.stringify(list));
+  } catch {
+    // ignore
+  }
+}
+
+function recordSession(v: ViewState) {
+  const session: Session = {
+    date: new Date().toISOString(),
+    reps: currentReps,
+    band: currentBand,
+    elapsedMs: Math.round(v.totalElapsedMs),
+    completedReps: v.repsCompleted,
+  };
+  sessions.unshift(session);
+  if (sessions.length > MAX_SESSIONS) sessions.length = MAX_SESSIONS;
+  saveSessions(sessions);
+  renderLog();
+  updateLogNumber();
+}
+
+function updateLogNumber() {
+  logNumberEl.textContent = `LOG N° ${pad3(sessions.length + 1)}`;
+}
+
+function renderLog() {
+  if (sessions.length === 0) {
+    logEl.innerHTML = `<div class="log-empty">No sessions logged yet — finish a workout to start your log.</div>`;
+    return;
+  }
+
+  const recent = sessions.slice(0, LOG_DISPLAY_LIMIT);
+  const rows = recent
+    .map(
+      (s) => `
+      <li class="log-item">
+        <span class="log-band" style="--band:${bandColor(s.band)}" title="${bandLabel(s.band)} band"></span>
+        <span class="log-reps">${pad2(s.completedReps)}/${pad2(s.reps)}</span>
+        <span class="log-date">${formatLogDate(s.date)}</span>
+        <span class="log-time">${formatClock(s.elapsedMs)}</span>
+      </li>`,
+    )
+    .join("");
+
+  const more =
+    sessions.length > LOG_DISPLAY_LIMIT
+      ? `<div class="log-more">+${sessions.length - LOG_DISPLAY_LIMIT} earlier</div>`
+      : "";
+
+  logEl.innerHTML = `
+    <div class="log-head">
+      <span class="log-title">Session Log</span>
+      <button type="button" class="log-clear" id="clearLogBtn">Clear</button>
+    </div>
+    <ol class="log-list">${rows}</ol>
+    ${more}
+  `;
+}
+
+function bandColor(id: BandId): string {
+  return (BANDS.find((b) => b.id === id) ?? BANDS[0]).color;
+}
+
+function bandLabel(id: BandId): string {
+  return (BANDS.find((b) => b.id === id) ?? BANDS[0]).label;
+}
+
+function formatLogDate(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return new Intl.DateTimeFormat(undefined, {
+    day: "2-digit",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(d);
+}
+
+function pad3(n: number): string {
+  return Math.max(0, Math.min(999, n)).toString().padStart(3, "0");
 }
