@@ -422,14 +422,18 @@ body::before {
   transition: stroke-dashoffset 220ms linear, stroke 200ms ease;
 }
 
-.dial-fill.paused {
+.dial-fill.resting {
   stroke: var(--mustard);
 }
 
 .dial-fill.idle,
-.dial-fill.ready,
+.dial-fill.logging,
 .dial-fill.done {
   stroke: transparent;
+}
+
+.dial-fill.working {
+  stroke: var(--signal);
 }
 
 .dial-tick {
@@ -894,18 +898,18 @@ button.primary.done {
   color: var(--paper);
 }
 
-button.primary.ready {
+button.primary.working {
   background: var(--signal);
   color: var(--paper);
 }
 
-button.primary.resting {
-  background: var(--paper);
+button.primary.logging {
+  background: var(--mustard);
   color: var(--ink);
 }
 
-button.primary.paused {
-  background: var(--mustard);
+button.primary.resting {
+  background: var(--paper);
   color: var(--ink);
 }
 
@@ -991,4 +995,102 @@ button.secondary.update[data-state="ready"] {
     animation-iteration-count: 1 !important;
     transition-duration: 0.001ms !important;
   }
+}
+
+/* ───────────────────────── REP STEPPER (logging) ───────────────────────── */
+
+.rep-stepper {
+  display: grid;
+  grid-template-columns: repeat(4, auto);
+  gap: 6px;
+  margin-top: 12px;
+  pointer-events: auto;
+}
+
+.rep-stepper.hidden {
+  display: none;
+}
+
+.step-btn {
+  font-family: var(--font-display);
+  font-size: 22px;
+  line-height: 1;
+  padding: 10px 14px;
+  min-width: 44px;
+  background: var(--paper-deep);
+  color: var(--ink);
+  border: 2px solid var(--ink);
+  cursor: pointer;
+  box-shadow: 3px 3px 0 0 var(--ink);
+  transition: transform 80ms ease, box-shadow 80ms ease;
+  touch-action: manipulation;
+}
+
+.step-btn.small {
+  font-size: 14px;
+  letter-spacing: 0.04em;
+  padding: 12px 10px;
+}
+
+.step-btn:active {
+  transform: translate(2px, 2px);
+  box-shadow: 1px 1px 0 0 var(--ink);
+}
+
+.big-number.count {
+  color: var(--brick);
+  font-size: clamp(78px, 26vw, 132px);
+}
+
+/* ───────────────────────── TALLY (per-set chips) ───────────────────────── */
+
+.tally-empty {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  font-size: 11px;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  padding: 8px 0;
+}
+
+.tally-set {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-width: 48px;
+  padding: 8px 10px 6px;
+  background: var(--paper-deep);
+  border: 2px solid var(--ink);
+  box-shadow: 3px 3px 0 0 var(--ink);
+}
+
+.tally-set-n {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 9px;
+  letter-spacing: 0.22em;
+  color: var(--ink-soft);
+  text-transform: uppercase;
+}
+
+.tally-set-reps {
+  font-family: var(--font-impact);
+  font-size: 22px;
+  line-height: 1;
+  color: var(--ink);
+  margin-top: 2px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ───────────────────────── END SESSION button ───────────────────────── */
+
+button.secondary.danger {
+  color: var(--brick);
+  text-decoration-color: var(--brick);
+}
+
+button.secondary.hidden {
+  display: none;
 }

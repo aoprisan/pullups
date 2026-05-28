@@ -1,15 +1,12 @@
 import { registerSW } from "virtual:pwa-register";
-import { PullupTimer, type ViewState, type Phase } from "./timer";
+import { PullupTimer, type ViewState, type SetRecord } from "./timer";
 import { beepCountdown, beepRepCue, beepDone, unlockAudio } from "./audio";
 
-const REP_OPTIONS = [10, 20] as const;
-const DEFAULT_REPS = 20;
-const RPM_OPTIONS = [1, 2, 3, 4, 6] as const;
-type Rpm = (typeof RPM_OPTIONS)[number];
-const DEFAULT_RPM: Rpm = 1;
-const MINUTE_MS = 60_000;
 const DIAL_PATH_LENGTH = 100;
 const SVG_NS = "http://www.w3.org/2000/svg";
+const LAP_MS = 60_000;
+const DEFAULT_REPS_FOR_DIAL = 10;
+const MAX_DIAL_REPS = 99;
 
 const BANDS = [
   { id: "green", label: "Green", color: "#4f8a3d" },
@@ -35,28 +32,22 @@ const MAX_BODY_WEIGHT = 500;
 
 interface Session {
   date: string;
-  reps: number;
-  rpm: number;
   band: BandId;
   elapsedMs: number;
-  completedReps: number;
+  totalReps: number;
+  sets: SetRecord[];
 }
 const SESSIONS_KEY = "pullups.sessions";
 const MAX_SESSIONS = 50;
 const LOG_DISPLAY_LIMIT = 6;
 
-let currentReps: number = loadReps();
-let currentRpm: Rpm = loadRpm();
 let currentBand: BandId = loadBand();
 let sessions: Session[] = loadSessions();
 let currentTab: TabId = DEFAULT_TAB;
 let currentBodyWeight: number | null = loadBodyWeight();
 let currentWeightUnit: WeightUnit = loadWeightUnit();
-let prevRenderedPhase: Phase = "idle";
-let timer = new PullupTimer({
-  totalReps: currentReps,
-  intervalMs: intervalMsFor(currentRpm),
-});
+let dialReps = DEFAULT_REPS_FOR_DIAL;
+const timer = new PullupTimer();
 
 const app = document.getElementById("app");
 if (!app) throw new Error("#app not found");
@@ -67,7 +58,7 @@ app.innerHTML = `
       <h1>PULL<span class="accent">·</span>UPS</h1>
       <div class="masthead-stamp" id="logNumber">LOG&nbsp;N°&nbsp;${pad3(sessions.length + 1)}</div>
     </div>
-    <div class="masthead-sub" id="modeLabel">${modeLabel(currentReps, currentRpm)}</div>
+    <div class="masthead-sub" id="modeLabel">Open sets · log reps after each</div>
     <div class="hatching" aria-hidden="true"></div>
   </header>
 
@@ -79,23 +70,6 @@ app.innerHTML = `
   </nav>
 
   <section class="tab-panel" id="panel-workout" role="tabpanel" aria-labelledby="tab-workout">
-    <section class="seg" role="radiogroup" aria-label="Total reps" id="repSelector" style="--cols: ${REP_OPTIONS.length}">
-      ${REP_OPTIONS.map(
-        (n) =>
-          `<button type="button" role="radio" data-reps="${n}" aria-checked="${n === currentReps}">${pad2(n)} REPS</button>`,
-      ).join("")}
-    </section>
-
-    <section class="pace" id="rpmSelector" role="radiogroup" aria-label="Reps per minute">
-      <div class="pace-caption">Pace · reps per minute</div>
-      <div class="seg" style="--cols: ${RPM_OPTIONS.length}">
-        ${RPM_OPTIONS.map(
-          (n) =>
-            `<button type="button" role="radio" data-rpm="${n}" aria-checked="${n === currentRpm}">${n}/MIN</button>`,
-        ).join("")}
-      </div>
-    </section>
-
     <section class="bands" id="bandSelector" role="radiogroup" aria-label="Resistance band">
       <div class="bands-caption">Resistance band</div>
       <div class="bands-row">
@@ -136,16 +110,21 @@ app.innerHTML = `
       </svg>
       <div class="dial-center" id="dialCenter">
         <div class="eyebrow" id="eyebrow">READY</div>
-        <div class="big-number" id="big">${pad2(1)}</div>
-        <div class="big-number-of" id="bigOf">of ${pad2(currentReps)}</div>
-        <div class="dial-status" id="dialStatus">PRESS START</div>
+        <div class="big-number" id="big">0:00</div>
+        <div class="dial-status" id="dialStatus">PRESS START SESSION</div>
+        <div class="rep-stepper hidden" id="repStepper" aria-label="Reps logged">
+          <button type="button" class="step-btn" data-step="-1" aria-label="Decrease reps">−</button>
+          <button type="button" class="step-btn small" data-step="-5" aria-label="Decrease by five">−5</button>
+          <button type="button" class="step-btn small" data-step="5" aria-label="Increase by five">+5</button>
+          <button type="button" class="step-btn" data-step="1" aria-label="Increase reps">+</button>
+        </div>
       </div>
     </div>
 
-    <section class="tally" id="tally" aria-label="Rep progression"></section>
+    <section class="tally" id="tally" aria-label="Sets logged"></section>
 
     <div class="meta">
-      <span class="meta-label">Elapsed</span>
+      <span class="meta-label">Session</span>
       <span class="meta-value" id="elapsed">0:00</span>
     </div>
   </section>
@@ -182,30 +161,28 @@ app.innerHTML = `
   </section>
 
   <div class="controls">
-    <button class="primary idle" id="primaryBtn">START</button>
-    <button class="secondary" id="resetBtn">Reset workout</button>
+    <button class="primary idle" id="primaryBtn">START SESSION</button>
+    <button class="secondary danger hidden" id="endSessionBtn">End session</button>
+    <button class="secondary" id="resetBtn" disabled>Reset</button>
     <button class="secondary update" id="updateBtn" data-state="idle">Update app</button>
     <div class="build-stamp" id="buildStamp"></div>
   </div>
 `;
 
-const dialEl = byId("dial");
 const dialFillEl = byId("dialFill") as unknown as SVGCircleElement;
 const dialCenterEl = byId("dialCenter");
 const eyebrowEl = byId("eyebrow");
 const bigEl = byId("big");
-const bigOfEl = byId("bigOf");
 const dialStatusEl = byId("dialStatus");
+const repStepperEl = byId("repStepper");
 const tallyEl = byId("tally");
 const elapsedEl = byId("elapsed");
-const modeLabelEl = byId("modeLabel");
-const repSelectorEl = byId("repSelector");
-const rpmSelectorEl = byId("rpmSelector");
 const bandSelectorEl = byId("bandSelector");
 const logEl = byId("log");
 const logNumberEl = byId("logNumber");
 const tabBarEl = byId("tabBar");
 const primaryBtn = byId("primaryBtn") as HTMLButtonElement;
+const endSessionBtn = byId("endSessionBtn") as HTMLButtonElement;
 const resetBtn = byId("resetBtn") as HTMLButtonElement;
 const updateBtn = byId("updateBtn") as HTMLButtonElement;
 const buildStampEl = byId("buildStamp");
@@ -213,8 +190,8 @@ const bodyWeightInput = byId("bodyWeightInput") as HTMLInputElement;
 const weightUnitSelectorEl = byId("weightUnitSelector");
 
 buildDialTicks();
-renderDialNumerals(currentRpm);
-renderTally(0);
+renderDialNumerals();
+renderTally([]);
 renderBuildStamp();
 renderLog();
 syncWeightUnitSelector();
@@ -232,30 +209,6 @@ tabBarEl.addEventListener("click", (e) => {
   syncTabs();
 });
 
-repSelectorEl.addEventListener("click", (e) => {
-  const target = e.target;
-  if (!(target instanceof HTMLElement)) return;
-  const btn = target.closest<HTMLButtonElement>("button[data-reps]");
-  if (!btn || btn.disabled) return;
-  const next = Number(btn.dataset.reps);
-  if (!REP_OPTIONS.includes(next as (typeof REP_OPTIONS)[number])) return;
-  if (next === currentReps) return;
-  if (!canChangeReps()) return;
-  setReps(next);
-});
-
-rpmSelectorEl.addEventListener("click", (e) => {
-  const target = e.target;
-  if (!(target instanceof HTMLElement)) return;
-  const btn = target.closest<HTMLButtonElement>("button[data-rpm]");
-  if (!btn || btn.disabled) return;
-  const next = Number(btn.dataset.rpm);
-  if (!RPM_OPTIONS.includes(next as Rpm)) return;
-  if (next === currentRpm) return;
-  if (!canChangeReps()) return;
-  setRpm(next as Rpm);
-});
-
 bandSelectorEl.addEventListener("click", (e) => {
   const target = e.target;
   if (!(target instanceof HTMLElement)) return;
@@ -264,7 +217,7 @@ bandSelectorEl.addEventListener("click", (e) => {
   const next = btn.dataset.band as BandId | undefined;
   if (!next || !BAND_IDS.includes(next)) return;
   if (next === currentBand) return;
-  if (!canChangeReps()) return;
+  if (!canChangeBand()) return;
   setBand(next);
 });
 
@@ -306,41 +259,56 @@ logEl.addEventListener("click", (e) => {
   updateLogNumber();
 });
 
+repStepperEl.addEventListener("click", (e) => {
+  const target = e.target;
+  if (!(target instanceof HTMLElement)) return;
+  const btn = target.closest<HTMLButtonElement>("button[data-step]");
+  if (!btn) return;
+  const step = Number(btn.dataset.step);
+  if (!Number.isFinite(step)) return;
+  dialReps = Math.max(0, Math.min(MAX_DIAL_REPS, dialReps + step));
+  pulseBig();
+});
+
 primaryBtn.addEventListener("click", () => {
   unlockAudio();
   const now = performance.now();
   switch (timer.currentPhase) {
     case "idle":
     case "done":
+      dialReps = DEFAULT_REPS_FOR_DIAL;
       timer.start(now);
-      beepRepCue();
       break;
-    case "ready":
-      timer.repDone(now);
-      pulseBig();
-      if (timer.completedReps >= currentReps) {
-        setTimeout(beepDone, 80);
-      }
+    case "working":
+      timer.setDone(now);
+      break;
+    case "logging":
+      timer.logReps(dialReps, now);
       break;
     case "resting":
-      timer.pause(now);
-      break;
-    case "paused":
-      timer.resume(now);
+      timer.nextSet(now);
       break;
   }
 });
 
+endSessionBtn.addEventListener("click", () => {
+  const now = performance.now();
+  if (timer.currentPhase === "idle" || timer.currentPhase === "done") return;
+  if (timer.completedSets === 0 && timer.currentPhase !== "logging") {
+    if (!window.confirm("End session without logging any sets?")) return;
+  }
+  timer.endSession(now);
+});
+
 resetBtn.addEventListener("click", () => {
+  if (timer.currentPhase !== "idle" && timer.currentPhase !== "done") {
+    if (!window.confirm("Discard this session?")) return;
+  }
   timer.reset();
+  dialReps = DEFAULT_REPS_FOR_DIAL;
 });
 
 // ───────────────────────── APP UPDATES ─────────────────────────
-// We register the service worker ourselves (importing virtual:pwa-register
-// tells the plugin to skip its auto-injected registration) so updates flow
-// through the "Update app" button instead of reloading the page from under
-// you. In autoUpdate mode the new worker has already taken control by the
-// time onNeedReload fires, so a plain reload is enough to pick up new assets.
 type UpdateState = "idle" | "checking" | "current" | "ready" | "updating";
 
 const UPDATE_LABELS: Record<UpdateState, string> = {
@@ -361,8 +329,6 @@ registerSW({
     swRegistration = registration;
   },
   onNeedReload() {
-    // A newer version has activated. If the user asked for it, apply it now;
-    // otherwise just surface it so we never interrupt a workout in progress.
     if (userRequestedUpdate) reloadForUpdate();
     else setUpdateState("ready");
   },
@@ -371,7 +337,6 @@ registerSW({
 updateBtn.addEventListener("click", async () => {
   const state = updateBtn.dataset.state;
   if (state === "ready") {
-    // Update was detected in the background — apply it on demand.
     reloadForUpdate();
     return;
   }
@@ -381,14 +346,11 @@ updateBtn.addEventListener("click", async () => {
   setUpdateState("checking");
 
   if (!swRegistration) {
-    // No service worker yet — a plain reload is the best we can do.
     window.location.reload();
     return;
   }
   try {
     await swRegistration.update();
-    // If a new worker is downloading/activating, onNeedReload reloads the page.
-    // Otherwise we're already on the latest build.
     if (!swRegistration.installing && !swRegistration.waiting) {
       userRequestedUpdate = false;
       setUpdateState("current");
@@ -433,49 +395,26 @@ function renderBuildStamp() {
   buildStampEl.title = date.toISOString();
 }
 
+let prevSetsCount = 0;
+
 function frame(now: number) {
   const view = timer.tick(now);
   render(view);
-  if (view.newRestCountdownTickIndex !== null) {
-    beepCountdown();
-  }
-  if (view.newRepReadyIndex !== null) {
+  if (view.enteredPhase === "working") {
     beepRepCue();
     pulseBig();
+  } else if (view.enteredPhase === "logging") {
+    const seed = timer.lastReps;
+    dialReps = seed === null ? DEFAULT_REPS_FOR_DIAL : seed;
+    beepCountdown();
+    pulseBig();
+  } else if (view.enteredPhase === "done") {
+    beepDone();
+    if (view.setsCompleted > 0) recordSession(view);
   }
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
-
-function setReps(n: number) {
-  currentReps = n;
-  saveReps(n);
-  rebuildTimer();
-  modeLabelEl.textContent = modeLabel(currentReps, currentRpm);
-  bigOfEl.textContent = `of ${pad2(currentReps)}`;
-  renderTally(0);
-  syncRepSelector();
-  syncRpmSelector();
-  syncBandSelector();
-}
-
-function setRpm(rpm: Rpm) {
-  currentRpm = rpm;
-  saveRpm(rpm);
-  rebuildTimer();
-  modeLabelEl.textContent = modeLabel(currentReps, currentRpm);
-  renderDialNumerals(currentRpm);
-  syncRepSelector();
-  syncRpmSelector();
-  syncBandSelector();
-}
-
-function rebuildTimer() {
-  timer = new PullupTimer({
-    totalReps: currentReps,
-    intervalMs: intervalMsFor(currentRpm),
-  });
-}
 
 function setBand(id: BandId) {
   currentBand = id;
@@ -483,41 +422,17 @@ function setBand(id: BandId) {
   syncBandSelector();
 }
 
-function canChangeReps(): boolean {
+function canChangeBand(): boolean {
   const p = timer.currentPhase;
   return p === "idle" || p === "done";
 }
 
-function syncRepSelector() {
-  const canChange = canChangeReps();
-  for (const btn of repSelectorEl.querySelectorAll<HTMLButtonElement>("button[data-reps]")) {
-    const n = Number(btn.dataset.reps);
-    const selected = n === currentReps;
-    btn.setAttribute("aria-checked", String(selected));
-    btn.classList.toggle("active", selected);
-    btn.disabled = !canChange;
-  }
-}
-
-function syncRpmSelector() {
-  const canChange = canChangeReps();
-  for (const btn of rpmSelectorEl.querySelectorAll<HTMLButtonElement>("button[data-rpm]")) {
-    const n = Number(btn.dataset.rpm);
-    const selected = n === currentRpm;
-    btn.setAttribute("aria-checked", String(selected));
-    btn.classList.toggle("active", selected);
-    btn.disabled = !canChange;
-  }
-}
-
 function syncBandSelector() {
-  const canChange = canChangeReps();
+  const canChange = canChangeBand();
   for (const btn of bandSelectorEl.querySelectorAll<HTMLButtonElement>("button[data-band]")) {
     const selected = btn.dataset.band === currentBand;
     btn.setAttribute("aria-checked", String(selected));
     btn.classList.toggle("active", selected);
-    // Keep the chosen band visible while a workout is in progress; only the
-    // alternatives are locked out.
     btn.disabled = !canChange && !selected;
   }
 }
@@ -543,59 +458,63 @@ function syncTabs() {
 }
 
 function render(v: ViewState) {
-  if (v.phase === "done" && prevRenderedPhase !== "done") {
-    recordSession(v);
-  }
-  prevRenderedPhase = v.phase;
-
-  const isRestState = v.phase === "resting" || v.phase === "paused";
-
-  if (isRestState) {
-    bigEl.textContent = formatClock(v.secondsRemainingInRest * 1000);
-    bigEl.classList.add("timer");
-    bigEl.classList.remove("done-state");
-    bigOfEl.style.visibility = "hidden";
-  } else {
-    bigEl.textContent = pad2(displayRepNumber(v));
-    bigEl.classList.remove("timer");
-    bigEl.classList.toggle("done-state", v.phase === "done");
-    bigOfEl.style.visibility = "visible";
-  }
+  bigEl.textContent = bigNumberText(v);
+  bigEl.classList.toggle("timer", v.phase === "working" || v.phase === "resting");
+  bigEl.classList.toggle("count", v.phase === "logging");
+  bigEl.classList.toggle("done-state", v.phase === "done");
 
   eyebrowEl.textContent = eyebrowLabel(v);
   dialStatusEl.textContent = statusLabel(v);
+  repStepperEl.classList.toggle("hidden", v.phase !== "logging");
 
   applyDialFill(v);
 
   elapsedEl.textContent = formatClock(v.totalElapsedMs);
 
-  renderTally(v.repsCompleted);
-  highlightCurrentTally(v);
-  syncRepSelector();
-  syncRpmSelector();
+  if (v.sets.length !== prevSetsCount || v.phase === "idle" || v.phase === "done") {
+    renderTally(v.sets);
+    prevSetsCount = v.sets.length;
+  }
+
   syncBandSelector();
 
   primaryBtn.className = `primary ${v.phase}`;
-  primaryBtn.textContent = primaryLabel(v.phase);
+  primaryBtn.textContent = primaryLabel(v);
+
+  endSessionBtn.classList.toggle(
+    "hidden",
+    v.phase === "idle" || v.phase === "done",
+  );
+  endSessionBtn.disabled = v.phase === "idle" || v.phase === "done";
+
   resetBtn.disabled = v.phase === "idle";
 }
 
-function displayRepNumber(v: ViewState): number {
-  if (v.phase === "idle") return 1;
-  if (v.phase === "done") return currentReps;
-  return v.currentRepNumber;
+function bigNumberText(v: ViewState): string {
+  switch (v.phase) {
+    case "idle":
+      return "0:00";
+    case "working":
+      return formatClock(v.workElapsedMs);
+    case "logging":
+      return pad2(dialReps);
+    case "resting":
+      return formatClock(v.restElapsedMs);
+    case "done":
+      return String(v.totalReps);
+  }
 }
 
 function eyebrowLabel(v: ViewState): string {
   switch (v.phase) {
     case "idle":
       return "READY";
-    case "ready":
-      return "REP";
+    case "working":
+      return `SET ${pad2(v.setNumber)}`;
+    case "logging":
+      return `LOG SET ${pad2(v.setNumber)}`;
     case "resting":
       return "REST";
-    case "paused":
-      return "PAUSED";
     case "done":
       return "DONE";
   }
@@ -604,39 +523,33 @@ function eyebrowLabel(v: ViewState): string {
 function statusLabel(v: ViewState): string {
   switch (v.phase) {
     case "idle":
-      return "PRESS START";
-    case "ready":
-      return v.currentRepNumber >= currentReps
-        ? "LAST ONE · TAP WHEN DONE"
-        : "TAP WHEN PULLUP DONE";
+      return "TAP START SESSION";
+    case "working":
+      return "TAP DONE SET WHEN FINISHED";
+    case "logging":
+      return "DIAL REPS · TAP CONFIRM";
     case "resting":
-      return `NEXT · REP ${pad2(v.currentRepNumber)}`;
-    case "paused":
-      return `RESUME · REP ${pad2(v.currentRepNumber)} NEXT`;
+      return v.totalReps === 0
+        ? "REST · TAP START SET WHEN READY"
+        : `${v.totalReps} REPS · ${pad2(v.setsCompleted)} SETS`;
     case "done":
-      return "NICE WORK";
+      return `${v.totalReps} REPS · ${pad2(v.setsCompleted)} SETS · ${formatClock(v.totalElapsedMs)}`;
   }
 }
 
-function primaryLabel(phase: Phase): string {
-  switch (phase) {
+function primaryLabel(v: ViewState): string {
+  switch (v.phase) {
     case "idle":
-      return "START";
-    case "ready":
-      return "PULLUP DONE";
+      return "START SESSION";
+    case "working":
+      return "DONE SET";
+    case "logging":
+      return `CONFIRM ${pad2(dialReps)}`;
     case "resting":
-      return "PAUSE";
-    case "paused":
-      return "RESUME";
+      return "START SET";
     case "done":
-      return "RESTART";
+      return "NEW SESSION";
   }
-}
-
-function modeLabel(reps: number, rpm: Rpm): string {
-  const intervalSec = Math.round(intervalMsFor(rpm) / 1000);
-  const pace = rpm === 1 ? "one rep per minute" : `${rpm} reps per minute`;
-  return `${pad2(reps)} reps · ${intervalSec}s rest · ${pace}`;
 }
 
 function tabLabel(t: TabId): string {
@@ -650,23 +563,20 @@ function tabLabel(t: TabId): string {
   }
 }
 
-function intervalMsFor(rpm: Rpm): number {
-  return Math.round(MINUTE_MS / rpm);
-}
-
 function applyDialFill(v: ViewState) {
   const fill = dialFillEl;
-  fill.classList.remove("idle", "ready", "resting", "paused", "done");
+  fill.classList.remove("idle", "working", "logging", "resting", "done");
   fill.classList.add(v.phase);
 
-  if (v.phase === "resting" || v.phase === "paused") {
-    const restRemaining = Math.max(0, v.restTotalMs - v.restElapsedMs);
-    const remainingFraction = restRemaining / v.restTotalMs;
-    const offset = (1 - remainingFraction) * DIAL_PATH_LENGTH;
-    fill.setAttribute("stroke-dashoffset", offset.toFixed(2));
-  } else {
-    fill.setAttribute("stroke-dashoffset", DIAL_PATH_LENGTH.toString());
+  let offset = DIAL_PATH_LENGTH;
+  if (v.phase === "working") {
+    const frac = (v.workElapsedMs % LAP_MS) / LAP_MS;
+    offset = (1 - frac) * DIAL_PATH_LENGTH;
+  } else if (v.phase === "resting") {
+    const frac = (v.restElapsedMs % LAP_MS) / LAP_MS;
+    offset = (1 - frac) * DIAL_PATH_LENGTH;
   }
+  fill.setAttribute("stroke-dashoffset", offset.toFixed(2));
 }
 
 function pulseBig() {
@@ -697,22 +607,19 @@ function buildDialTicks() {
     line.setAttribute("class", `dial-tick${isMajor ? " major" : ""}`);
     ticksGroup.appendChild(line);
   }
-
-  void dialEl;
 }
 
-function renderDialNumerals(rpm: Rpm) {
+function renderDialNumerals() {
   const numeralsGroup = byId("dialNumerals");
   numeralsGroup.innerHTML = "";
   const cx = 170;
   const cy = 170;
-  const intervalSec = Math.round(intervalMsFor(rpm) / 1000);
 
   const numerals: Array<{ at: number; label: string }> = [
-    { at: 0, label: String(intervalSec) },
-    { at: 15, label: String(Math.round(intervalSec * 0.25)) },
-    { at: 30, label: String(Math.round(intervalSec * 0.5)) },
-    { at: 45, label: String(Math.round(intervalSec * 0.75)) },
+    { at: 0, label: "60" },
+    { at: 15, label: "15" },
+    { at: 30, label: "30" },
+    { at: 45, label: "45" },
   ];
   for (const { at, label } of numerals) {
     const angle = (at / 60) * Math.PI * 2 - Math.PI / 2;
@@ -728,45 +635,17 @@ function renderDialNumerals(rpm: Rpm) {
   }
 }
 
-function renderTally(filledCount: number) {
-  const groupCount = currentReps / 5;
-  if (tallyEl.childElementCount !== groupCount) {
-    tallyEl.innerHTML = "";
-    for (let g = 0; g < groupCount; g++) {
-      const group = document.createElement("div");
-      group.className = "tally-group";
-      for (let s = 0; s < 4; s++) {
-        const stroke = document.createElement("div");
-        stroke.className = "stroke";
-        group.appendChild(stroke);
-      }
-      const slash = document.createElement("div");
-      slash.className = "slash";
-      group.appendChild(slash);
-      tallyEl.appendChild(group);
-    }
+function renderTally(sets: ReadonlyArray<SetRecord>) {
+  if (sets.length === 0) {
+    tallyEl.innerHTML = `<div class="tally-empty">No sets logged yet</div>`;
+    return;
   }
-
-  const groups = tallyEl.children;
-  for (let g = 0; g < groupCount; g++) {
-    const group = groups[g] as HTMLElement;
-    const base = g * 5;
-    const children = group.children;
-    for (let s = 0; s < 4; s++) {
-      (children[s] as HTMLElement).classList.toggle("filled", base + s < filledCount);
-    }
-    (children[4] as HTMLElement).classList.toggle("filled", base + 4 < filledCount);
-  }
-}
-
-function highlightCurrentTally(v: ViewState) {
-  const highlight = v.phase === "ready" || v.phase === "resting" || v.phase === "paused";
-  const idx = highlight && v.currentRepNumber <= currentReps ? v.currentRepNumber - 1 : -1;
-  const groupIdx = idx >= 0 ? Math.floor(idx / 5) : -1;
-  const groups = tallyEl.children;
-  for (let g = 0; g < groups.length; g++) {
-    (groups[g] as HTMLElement).classList.toggle("current", g === groupIdx);
-  }
+  tallyEl.innerHTML = sets
+    .map(
+      (s, i) =>
+        `<div class="tally-set"><span class="tally-set-n">${pad2(i + 1)}</span><span class="tally-set-reps">${s.reps}</span></div>`,
+    )
+    .join("");
 }
 
 function pad2(n: number): string {
@@ -784,44 +663,6 @@ function byId(id: string): HTMLElement {
   const el = document.getElementById(id);
   if (!el) throw new Error(`#${id} not found`);
   return el;
-}
-
-function loadReps(): number {
-  try {
-    const raw = localStorage.getItem("pullups.reps");
-    const n = raw === null ? NaN : Number(raw);
-    if (REP_OPTIONS.includes(n as (typeof REP_OPTIONS)[number])) return n;
-  } catch {
-    // localStorage unavailable
-  }
-  return DEFAULT_REPS;
-}
-
-function saveReps(n: number) {
-  try {
-    localStorage.setItem("pullups.reps", String(n));
-  } catch {
-    // ignore
-  }
-}
-
-function loadRpm(): Rpm {
-  try {
-    const raw = localStorage.getItem("pullups.rpm");
-    const n = raw === null ? NaN : Number(raw);
-    if (RPM_OPTIONS.includes(n as Rpm)) return n as Rpm;
-  } catch {
-    // localStorage unavailable
-  }
-  return DEFAULT_RPM;
-}
-
-function saveRpm(rpm: Rpm) {
-  try {
-    localStorage.setItem("pullups.rpm", String(rpm));
-  } catch {
-    // ignore
-  }
 }
 
 function loadBand(): BandId {
@@ -901,22 +742,37 @@ function normalizeSession(x: unknown): Session | null {
   const s = x as Record<string, unknown>;
   if (
     typeof s.date !== "string" ||
-    typeof s.reps !== "number" ||
     typeof s.band !== "string" ||
     !BAND_IDS.includes(s.band as BandId) ||
-    typeof s.elapsedMs !== "number" ||
-    typeof s.completedReps !== "number"
+    typeof s.elapsedMs !== "number"
   ) {
     return null;
   }
-  const rpm = typeof s.rpm === "number" && RPM_OPTIONS.includes(s.rpm as Rpm) ? (s.rpm as number) : 1;
+  let sets: SetRecord[] = [];
+  if (Array.isArray(s.sets)) {
+    sets = s.sets.flatMap((raw): SetRecord[] => {
+      if (typeof raw !== "object" || raw === null) return [];
+      const r = raw as Record<string, unknown>;
+      if (typeof r.reps !== "number") return [];
+      return [
+        {
+          reps: r.reps,
+          workMs: typeof r.workMs === "number" ? r.workMs : 0,
+          restMsAfter: typeof r.restMsAfter === "number" ? r.restMsAfter : 0,
+        },
+      ];
+    });
+  }
+  const totalReps =
+    typeof s.totalReps === "number"
+      ? s.totalReps
+      : sets.reduce((sum, set) => sum + set.reps, 0);
   return {
     date: s.date,
-    reps: s.reps,
-    rpm,
     band: s.band as BandId,
     elapsedMs: s.elapsedMs,
-    completedReps: s.completedReps,
+    totalReps,
+    sets,
   };
 }
 
@@ -931,11 +787,10 @@ function saveSessions(list: Session[]) {
 function recordSession(v: ViewState) {
   const session: Session = {
     date: new Date().toISOString(),
-    reps: currentReps,
-    rpm: currentRpm,
     band: currentBand,
     elapsedMs: Math.round(v.totalElapsedMs),
-    completedReps: v.repsCompleted,
+    totalReps: v.totalReps,
+    sets: v.sets.map((s) => ({ ...s })),
   };
   sessions.unshift(session);
   if (sessions.length > MAX_SESSIONS) sessions.length = MAX_SESSIONS;
@@ -960,8 +815,8 @@ function renderLog() {
       (s) => `
       <li class="log-item">
         <span class="log-band${s.band === "none" ? " none" : ""}" style="--band:${bandColor(s.band)}" title="${bandTitle(s.band)}"></span>
-        <span class="log-reps">${pad2(s.completedReps)}/${pad2(s.reps)}</span>
-        <span class="log-pace" title="Reps per minute">${s.rpm}/min</span>
+        <span class="log-reps">${s.totalReps}</span>
+        <span class="log-pace" title="Sets">${s.sets.length} sets</span>
         <span class="log-date">${formatLogDate(s.date)}</span>
         <span class="log-time">${formatClock(s.elapsedMs)}</span>
       </li>`,
