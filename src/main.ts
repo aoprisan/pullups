@@ -15,7 +15,7 @@ import {
 const DIAL_PATH_LENGTH = 100;
 const SVG_NS = "http://www.w3.org/2000/svg";
 const LAP_MS = 60_000;
-const DEFAULT_REPS_FOR_DIAL = 10;
+const DEFAULT_REPS_FOR_DIAL = 3;
 const MAX_DIAL_REPS = 99;
 
 const BANDS = [
@@ -43,7 +43,7 @@ const MAX_BODY_WEIGHT = 500;
 const EMOM_CONFIG_KEY = "pullups.emomConfig";
 const EMOM_DURATIONS = [10, 20] as const;
 type EmomDuration = (typeof EMOM_DURATIONS)[number];
-const DEFAULT_EMOM_REPS = 5;
+const DEFAULT_EMOM_REPS = 1;
 const DEFAULT_EMOM_MINUTES: EmomDuration = 10;
 const MIN_EMOM_REPS = 1;
 const MAX_EMOM_REPS = 20;
@@ -356,64 +356,123 @@ function emomApplyRepDelta(delta: number) {
 }
 
 // ───────────────────────── KNOB INTERACTION ─────────────────────────
-// Drag the dial like a rotary knob: clockwise = +reps, counter-clockwise = -reps.
+// Drag the dial like a joystick: one full revolution = ±1 rep.
+// Clockwise = +1, counter-clockwise = -1. Partial turns reset on lift.
 
-const DEGREES_PER_REP = 18;
+const DEGREES_PER_REP = 360;
+const DEAD_ZONE_PX = 22;
+const DETENTS_PER_REV = 12;
+const GRIP_RADIUS = 96;
+
+function buzz(ms: number) {
+  if (typeof navigator !== "undefined" && typeof navigator.vibrate === "function") {
+    navigator.vibrate(ms);
+  }
+}
 
 function setupKnob(
   dialStage: HTMLElement,
+  gripEl: SVGCircleElement,
+  arcEl: SVGCircleElement,
   isActive: () => boolean,
   applyDelta: (delta: number) => void,
 ) {
   let pointerId: number | null = null;
   let lastAngle = 0;
   let accumulated = 0;
+  let lastDetent = 0;
 
-  function angleAt(clientX: number, clientY: number): number {
+  function vectorAt(clientX: number, clientY: number) {
     const rect = dialStage.getBoundingClientRect();
     const cx = rect.left + rect.width / 2;
     const cy = rect.top + rect.height / 2;
-    return (Math.atan2(clientY - cy, clientX - cx) * 180) / Math.PI;
+    const dx = clientX - cx;
+    const dy = clientY - cy;
+    return { dx, dy, dist: Math.hypot(dx, dy), angleDeg: (Math.atan2(dy, dx) * 180) / Math.PI };
+  }
+
+  function placeGrip(angleDeg: number) {
+    const rad = (angleDeg * Math.PI) / 180;
+    const x = 170 + Math.cos(rad) * GRIP_RADIUS;
+    const y = 170 + Math.sin(rad) * GRIP_RADIUS;
+    gripEl.setAttribute("cx", x.toFixed(2));
+    gripEl.setAttribute("cy", y.toFixed(2));
+  }
+
+  function paintArc() {
+    // 1 path unit = 1% of the circumference; show signed fraction of the revolution.
+    const frac = Math.max(-1, Math.min(1, accumulated / 360));
+    const offset = (1 - Math.abs(frac)) * DIAL_PATH_LENGTH;
+    arcEl.setAttribute("stroke-dashoffset", offset.toFixed(2));
+    arcEl.classList.toggle("reverse", frac < 0);
+  }
+
+  function setActive(on: boolean) {
+    gripEl.classList.toggle("active", on);
+    arcEl.classList.toggle("active", on);
+    dialStage.classList.toggle("grabbing", on);
   }
 
   dialStage.addEventListener("pointerdown", (e) => {
     if (!isActive()) return;
     if (e.target instanceof Element && e.target.closest("button")) return;
+    const v = vectorAt(e.clientX, e.clientY);
     pointerId = e.pointerId;
-    lastAngle = angleAt(e.clientX, e.clientY);
+    lastAngle = v.angleDeg;
     accumulated = 0;
-    dialStage.classList.add("grabbing");
+    lastDetent = 0;
+    placeGrip(v.angleDeg);
+    setActive(true);
+    paintArc();
     try {
       dialStage.setPointerCapture(e.pointerId);
     } catch {
-      // ignore — capture unsupported
+      // capture unsupported
     }
     e.preventDefault();
+    buzz(6);
   });
 
   dialStage.addEventListener("pointermove", (e) => {
     if (e.pointerId !== pointerId) return;
-    const a = angleAt(e.clientX, e.clientY);
-    let delta = a - lastAngle;
+    const v = vectorAt(e.clientX, e.clientY);
+    placeGrip(v.angleDeg);
+    const from = lastAngle;
+    lastAngle = v.angleDeg;
+    // Near dead-centre, finger angle is unreliable — track visually but bank nothing.
+    if (v.dist < DEAD_ZONE_PX) return;
+
+    let delta = v.angleDeg - from;
     if (delta > 180) delta -= 360;
     if (delta < -180) delta += 360;
     accumulated += delta;
-    lastAngle = a;
+
     while (accumulated >= DEGREES_PER_REP) {
       accumulated -= DEGREES_PER_REP;
       applyDelta(1);
+      buzz(18);
     }
     while (accumulated <= -DEGREES_PER_REP) {
       accumulated += DEGREES_PER_REP;
       applyDelta(-1);
+      buzz(18);
     }
+
+    const det = Math.floor((Math.abs(accumulated) / 360) * DETENTS_PER_REV);
+    if (det !== lastDetent) {
+      lastDetent = det;
+      buzz(4);
+    }
+    paintArc();
   });
 
   function end(e: PointerEvent) {
     if (e.pointerId !== pointerId) return;
     pointerId = null;
     accumulated = 0;
-    dialStage.classList.remove("grabbing");
+    lastDetent = 0;
+    setActive(false);
+    paintArc();
     try {
       dialStage.releasePointerCapture(e.pointerId);
     } catch {
@@ -426,11 +485,15 @@ function setupKnob(
 
 setupKnob(
   setsDialCenterEl.parentElement as HTMLElement,
+  byId("dialGrip-sets") as unknown as SVGCircleElement,
+  byId("dialKnobArc-sets") as unknown as SVGCircleElement,
   () => setsTimer.currentPhase === "logging",
   setsApplyRepDelta,
 );
 setupKnob(
   emomDialCenterEl.parentElement as HTMLElement,
+  byId("dialGrip-emom") as unknown as SVGCircleElement,
+  byId("dialKnobArc-emom") as unknown as SVGCircleElement,
   () => emomTimer.currentPhase === "working",
   emomApplyRepDelta,
 );
@@ -1145,6 +1208,17 @@ function renderDialHtml(scope: "sets" | "emom"): string {
           stroke-dasharray="${DIAL_PATH_LENGTH} ${DIAL_PATH_LENGTH}"
           stroke-dashoffset="${DIAL_PATH_LENGTH}"
         />
+        <circle
+          class="dial-knob-arc"
+          id="dialKnobArc-${scope}"
+          cx="170"
+          cy="170"
+          r="116"
+          pathLength="${DIAL_PATH_LENGTH}"
+          stroke-dasharray="${DIAL_PATH_LENGTH} ${DIAL_PATH_LENGTH}"
+          stroke-dashoffset="${DIAL_PATH_LENGTH}"
+        />
+        <circle class="dial-grip" id="dialGrip-${scope}" cx="170" cy="170" r="16" />
       </svg>
       <div class="dial-center" id="dialCenter-${scope}">
         <div class="eyebrow" id="eyebrow-${scope}">READY</div>

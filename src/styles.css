@@ -456,6 +456,40 @@ body::before {
   stroke: var(--signal);
 }
 
+.dial-knob-arc {
+  fill: none;
+  stroke: var(--brick);
+  stroke-width: 6;
+  stroke-linecap: round;
+  transform: rotate(-90deg);
+  transform-origin: center;
+  opacity: 0;
+  transition: opacity 140ms ease;
+  pointer-events: none;
+}
+
+.dial-knob-arc.active {
+  opacity: 0.9;
+}
+
+.dial-knob-arc.reverse {
+  transform: rotate(-90deg) scale(-1, 1);
+}
+
+.dial-grip {
+  fill: var(--signal);
+  stroke: var(--ink);
+  stroke-width: 2.5;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 140ms ease;
+  filter: drop-shadow(0 2px 2px rgba(21, 17, 13, 0.35));
+}
+
+.dial-grip.active {
+  opacity: 0.92;
+}
+
 .dial-tick {
   stroke: var(--ink);
   stroke-width: 1;
