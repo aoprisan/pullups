@@ -168,6 +168,12 @@ body::before {
   transition: background 140ms ease, color 140ms ease;
 }
 
+.tabs-4 button {
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  padding: 11px 6px 9px;
+}
+
 .tabs button + button {
   border-left: 2px solid var(--ink);
 }
@@ -384,6 +390,20 @@ body::before {
   justify-content: center;
   align-items: center;
   animation: rise 600ms cubic-bezier(0.16, 0.84, 0.36, 1) 180ms both;
+  touch-action: none;
+}
+
+.dial-stage.grab-hint {
+  cursor: grab;
+}
+
+.dial-stage.grabbing {
+  cursor: grabbing;
+}
+
+.dial-stage.grab-hint .dial,
+.dial-stage.grabbing .dial {
+  user-select: none;
 }
 
 .dial {
@@ -675,6 +695,107 @@ body::before {
   text-align: center;
 }
 
+.log-export {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 14px 12px;
+  background: var(--paper-deep);
+  border: 2.5px solid var(--ink);
+  box-shadow: 4px 4px 0 0 var(--ink);
+  margin-bottom: 6px;
+}
+
+.log-export-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.log-export-caption {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 10px;
+  letter-spacing: 0.32em;
+  text-transform: uppercase;
+  color: var(--brick);
+}
+
+.log-export-hint {
+  font-family: var(--font-mono);
+  font-weight: 500;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: var(--ink-soft);
+  text-align: right;
+}
+
+.log-actions {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+.log-action {
+  font: inherit;
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  text-align: center;
+  background: var(--paper);
+  color: var(--ink);
+  border: 2px solid var(--ink);
+  padding: 11px 6px 9px;
+  cursor: pointer;
+  box-shadow: 3px 3px 0 0 var(--ink);
+  transition:
+    transform 90ms ease,
+    box-shadow 90ms ease,
+    background 160ms ease;
+  touch-action: manipulation;
+}
+
+.log-action:active {
+  transform: translate(2px, 2px);
+  box-shadow: 1px 1px 0 0 var(--ink);
+}
+
+.log-action.accent {
+  background: var(--signal);
+  color: var(--paper);
+}
+
+.log-action:disabled {
+  cursor: progress;
+  opacity: 0.55;
+}
+
+.log-actions.busy .log-action {
+  pointer-events: none;
+}
+
+.log-status {
+  margin: 2px 0 0;
+  min-height: 16px;
+  font-family: var(--font-mono);
+  font-weight: 500;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--ink-soft);
+}
+
+.log-status-ok {
+  color: var(--brick);
+}
+
+.log-status-err {
+  color: var(--signal);
+  font-weight: 700;
+}
+
 .log-head {
   display: flex;
   justify-content: space-between;
@@ -717,14 +838,33 @@ body::before {
 
 .log-item {
   display: grid;
-  grid-template-columns: auto auto auto 1fr auto;
+  grid-template-columns: auto auto auto auto 1fr auto;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   padding: 8px 2px;
   border-top: 1.5px solid var(--ink-faint);
   font-family: var(--font-mono);
   font-weight: 600;
   font-size: 12px;
+  color: var(--ink);
+}
+
+.log-type {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  padding: 2px 5px 1px;
+  border: 1.5px solid var(--ink);
+}
+
+.log-type-emom {
+  background: var(--ink);
+  color: var(--paper);
+}
+
+.log-type-open {
+  background: var(--paper-deep);
   color: var(--ink);
 }
 
@@ -857,6 +997,72 @@ body::before {
   color: var(--ink-soft);
 }
 
+/* ───────────────────────── EMOM CONFIG ───────────────────────── */
+
+.emom-config {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px 12px;
+  background: var(--paper-deep);
+  border: 2.5px solid var(--ink);
+  box-shadow: 4px 4px 0 0 var(--ink);
+  animation: rise 540ms cubic-bezier(0.16, 0.84, 0.36, 1) 120ms both;
+}
+
+.emom-config.locked {
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+.emom-config-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 12px;
+}
+
+.emom-config-label {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 10px;
+  letter-spacing: 0.32em;
+  text-transform: uppercase;
+  color: var(--brick);
+}
+
+.emom-config-stepper {
+  display: inline-grid;
+  grid-template-columns: auto auto auto;
+  gap: 6px;
+  align-items: center;
+}
+
+.emom-config-stepper .step-btn {
+  padding: 8px 14px;
+  font-size: 16px;
+  min-width: 38px;
+}
+
+.emom-config-value {
+  font-family: var(--font-impact);
+  font-size: 26px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+  min-width: 48px;
+  text-align: center;
+}
+
+.seg-emom {
+  --cols: 2;
+}
+
+.seg-emom button {
+  font-size: 13px;
+  padding: 8px 14px 6px;
+  letter-spacing: 0.12em;
+}
+
 /* ───────────────────────── CONTROLS ───────────────────────── */
 
 .controls {
@@ -865,6 +1071,15 @@ body::before {
   flex-direction: column;
   gap: 8px;
   animation: rise 700ms cubic-bezier(0.16, 0.84, 0.36, 1) 360ms both;
+}
+
+.panel-controls {
+  margin-top: 4px;
+}
+
+.global-controls {
+  margin-top: auto;
+  padding-top: 6px;
 }
 
 button.primary {
@@ -1001,8 +1216,8 @@ button.secondary.update[data-state="ready"] {
 
 .rep-stepper {
   display: grid;
-  grid-template-columns: repeat(4, auto);
-  gap: 6px;
+  grid-template-columns: repeat(2, auto);
+  gap: 10px;
   margin-top: 12px;
   pointer-events: auto;
 }

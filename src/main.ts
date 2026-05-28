@@ -1,6 +1,16 @@
 import { registerSW } from "virtual:pwa-register";
 import { PullupTimer, type ViewState, type SetRecord } from "./timer";
+import { EmomTimer, type EmomViewState, type EmomSetRecord } from "./emomTimer";
 import { beepCountdown, beepRepCue, beepDone, unlockAudio } from "./audio";
+import {
+  analyzeSessionInClaude,
+  copySessionPrompt,
+  shareSessionPng,
+  type SessionData,
+  type AnalyzeResult,
+  type CopyResult,
+  type ShareResult,
+} from "./exporters";
 
 const DIAL_PATH_LENGTH = 100;
 const SVG_NS = "http://www.w3.org/2000/svg";
@@ -19,9 +29,9 @@ type BandId = (typeof BANDS)[number]["id"];
 const BAND_IDS = BANDS.map((b) => b.id) as readonly BandId[];
 const DEFAULT_BAND: BandId = "green";
 
-const TABS = ["workout", "log", "settings"] as const;
+const TABS = ["sets", "emom", "log", "settings"] as const;
 type TabId = (typeof TABS)[number];
-const DEFAULT_TAB: TabId = "workout";
+const DEFAULT_TAB: TabId = "sets";
 
 const WEIGHT_UNITS = ["kg", "lb"] as const;
 type WeightUnit = (typeof WEIGHT_UNITS)[number];
@@ -30,13 +40,38 @@ const BODY_WEIGHT_KEY = "pullups.bodyWeight";
 const WEIGHT_UNIT_KEY = "pullups.weightUnit";
 const MAX_BODY_WEIGHT = 500;
 
-interface Session {
+const EMOM_CONFIG_KEY = "pullups.emomConfig";
+const EMOM_DURATIONS = [10, 20] as const;
+type EmomDuration = (typeof EMOM_DURATIONS)[number];
+const DEFAULT_EMOM_REPS = 5;
+const DEFAULT_EMOM_MINUTES: EmomDuration = 10;
+const MIN_EMOM_REPS = 1;
+const MAX_EMOM_REPS = 20;
+
+type SessionType = "open" | "emom";
+
+interface OpenSession {
+  type: "open";
   date: string;
   band: BandId;
   elapsedMs: number;
   totalReps: number;
   sets: SetRecord[];
 }
+
+interface EmomSession {
+  type: "emom";
+  date: string;
+  band: BandId;
+  elapsedMs: number;
+  totalReps: number;
+  targetRepsPerMin: number;
+  targetMinutes: number;
+  sets: EmomSetRecord[];
+}
+
+type Session = OpenSession | EmomSession;
+
 const SESSIONS_KEY = "pullups.sessions";
 const MAX_SESSIONS = 50;
 const LOG_DISPLAY_LIMIT = 6;
@@ -47,7 +82,12 @@ let currentTab: TabId = DEFAULT_TAB;
 let currentBodyWeight: number | null = loadBodyWeight();
 let currentWeightUnit: WeightUnit = loadWeightUnit();
 let dialReps = DEFAULT_REPS_FOR_DIAL;
-const timer = new PullupTimer();
+let emomReps: number = DEFAULT_EMOM_REPS;
+let emomMinutes: EmomDuration = DEFAULT_EMOM_MINUTES;
+({ reps: emomReps, minutes: emomMinutes } = loadEmomConfig());
+const setsTimer = new PullupTimer();
+const emomTimer = new EmomTimer();
+emomTimer.setConfig(emomMinutes, emomReps);
 
 const app = document.getElementById("app");
 if (!app) throw new Error("#app not found");
@@ -58,74 +98,63 @@ app.innerHTML = `
       <h1>PULL<span class="accent">·</span>UPS</h1>
       <div class="masthead-stamp" id="logNumber">LOG&nbsp;N°&nbsp;${pad3(sessions.length + 1)}</div>
     </div>
-    <div class="masthead-sub" id="modeLabel">Open sets · log reps after each</div>
+    <div class="masthead-sub" id="modeLabel">Pull-up workout log</div>
     <div class="hatching" aria-hidden="true"></div>
   </header>
 
-  <nav class="tabs" role="tablist" id="tabBar">
+  <nav class="tabs tabs-4" role="tablist" id="tabBar">
     ${TABS.map(
       (t) =>
         `<button type="button" role="tab" data-tab="${t}" aria-selected="${t === currentTab}" id="tab-${t}" aria-controls="panel-${t}">${tabLabel(t)}</button>`,
     ).join("")}
   </nav>
 
-  <section class="tab-panel" id="panel-workout" role="tabpanel" aria-labelledby="tab-workout">
-    <section class="bands" id="bandSelector" role="radiogroup" aria-label="Resistance band">
-      <div class="bands-caption">Resistance band</div>
-      <div class="bands-row">
-        ${BANDS.map(
-          (b) =>
-            `<button type="button" role="radio" class="band-chip" data-band="${b.id}" aria-checked="${b.id === currentBand}" aria-label="${bandTitle(b.id)}" style="--band:${b.color}"><span class="band-dot${b.id === "none" ? " none" : ""}"></span><span class="band-name">${b.label}</span></button>`,
-        ).join("")}
-      </div>
-    </section>
-
-    <div class="dial-stage">
-      <svg class="dial" id="dial" viewBox="0 0 340 340" aria-hidden="true">
-        <defs>
-          <radialGradient id="dialFace" cx="50%" cy="40%" r="66%">
-            <stop offset="0%" stop-color="#f4eddc" />
-            <stop offset="58%" stop-color="#e9dec3" />
-            <stop offset="100%" stop-color="#d6c79f" />
-          </radialGradient>
-          <filter id="dialEmboss" x="-25%" y="-25%" width="150%" height="150%">
-            <feDropShadow dx="0" dy="3" stdDeviation="5" flood-color="#15110d" flood-opacity="0.17" />
-          </filter>
-        </defs>
-        <circle class="dial-face" cx="170" cy="170" r="154" fill="url(#dialFace)" filter="url(#dialEmboss)" />
-        <circle class="dial-rim" cx="170" cy="170" r="154" />
-        <g class="dial-ticks" id="dialTicks"></g>
-        <g class="dial-numerals" id="dialNumerals"></g>
-        <circle class="dial-track" cx="170" cy="170" r="138" />
-        <circle
-          class="dial-fill idle"
-          id="dialFill"
-          cx="170"
-          cy="170"
-          r="138"
-          pathLength="${DIAL_PATH_LENGTH}"
-          stroke-dasharray="${DIAL_PATH_LENGTH} ${DIAL_PATH_LENGTH}"
-          stroke-dashoffset="${DIAL_PATH_LENGTH}"
-        />
-      </svg>
-      <div class="dial-center" id="dialCenter">
-        <div class="eyebrow" id="eyebrow">READY</div>
-        <div class="big-number" id="big">0:00</div>
-        <div class="dial-status" id="dialStatus">PRESS START SESSION</div>
-        <div class="rep-stepper hidden" id="repStepper" aria-label="Reps logged">
-          <button type="button" class="step-btn" data-step="-1" aria-label="Decrease reps">−</button>
-          <button type="button" class="step-btn small" data-step="-5" aria-label="Decrease by five">−5</button>
-          <button type="button" class="step-btn small" data-step="5" aria-label="Increase by five">+5</button>
-          <button type="button" class="step-btn" data-step="1" aria-label="Increase reps">+</button>
-        </div>
-      </div>
-    </div>
-
-    <section class="tally" id="tally" aria-label="Sets logged"></section>
-
+  <section class="tab-panel" id="panel-sets" role="tabpanel" aria-labelledby="tab-sets">
+    ${renderBandSelectorHtml("sets")}
+    ${renderDialHtml("sets")}
+    <section class="tally" id="tally-sets" aria-label="Sets logged"></section>
     <div class="meta">
       <span class="meta-label">Session</span>
-      <span class="meta-value" id="elapsed">0:00</span>
+      <span class="meta-value" id="elapsed-sets">0:00</span>
+    </div>
+    <div class="controls panel-controls" id="controls-sets">
+      <button class="primary idle" id="primaryBtn-sets">START SESSION</button>
+      <button class="secondary danger hidden" id="endSessionBtn-sets">End session</button>
+      <button class="secondary" id="resetBtn-sets" disabled>Reset</button>
+    </div>
+  </section>
+
+  <section class="tab-panel hidden" id="panel-emom" role="tabpanel" aria-labelledby="tab-emom">
+    ${renderBandSelectorHtml("emom")}
+    <section class="emom-config" id="emomConfig" aria-label="EMOM configuration">
+      <div class="emom-config-row">
+        <div class="emom-config-label">Reps / minute</div>
+        <div class="emom-config-stepper" id="emomRepsStepper" aria-label="Reps per minute">
+          <button type="button" class="step-btn small" data-emom-reps="-1" aria-label="Decrease reps per minute">−</button>
+          <div class="emom-config-value" id="emomRepsValue">${emomReps}</div>
+          <button type="button" class="step-btn small" data-emom-reps="1" aria-label="Increase reps per minute">+</button>
+        </div>
+      </div>
+      <div class="emom-config-row">
+        <div class="emom-config-label">Duration</div>
+        <div class="seg seg-emom" id="emomMinutesSelector" role="radiogroup" aria-label="Duration" style="--cols:${EMOM_DURATIONS.length}">
+          ${EMOM_DURATIONS.map(
+            (m) =>
+              `<button type="button" role="radio" data-emom-minutes="${m}" aria-checked="${m === emomMinutes}">${m} MIN</button>`,
+          ).join("")}
+        </div>
+      </div>
+    </section>
+    ${renderDialHtml("emom")}
+    <section class="tally" id="tally-emom" aria-label="Minutes logged"></section>
+    <div class="meta">
+      <span class="meta-label">EMOM</span>
+      <span class="meta-value" id="elapsed-emom">0:00</span>
+    </div>
+    <div class="controls panel-controls" id="controls-emom">
+      <button class="primary idle" id="primaryBtn-emom">START EMOM</button>
+      <button class="secondary danger hidden" id="endSessionBtn-emom">End EMOM</button>
+      <button class="secondary" id="resetBtn-emom" disabled>Reset</button>
     </div>
   </section>
 
@@ -160,42 +189,63 @@ app.innerHTML = `
     </section>
   </section>
 
-  <div class="controls">
-    <button class="primary idle" id="primaryBtn">START SESSION</button>
-    <button class="secondary danger hidden" id="endSessionBtn">End session</button>
-    <button class="secondary" id="resetBtn" disabled>Reset</button>
+  <div class="controls global-controls">
     <button class="secondary update" id="updateBtn" data-state="idle">Update app</button>
     <div class="build-stamp" id="buildStamp"></div>
   </div>
 `;
 
-const dialFillEl = byId("dialFill") as unknown as SVGCircleElement;
-const dialCenterEl = byId("dialCenter");
-const eyebrowEl = byId("eyebrow");
-const bigEl = byId("big");
-const dialStatusEl = byId("dialStatus");
-const repStepperEl = byId("repStepper");
-const tallyEl = byId("tally");
-const elapsedEl = byId("elapsed");
-const bandSelectorEl = byId("bandSelector");
+const tabBarEl = byId("tabBar");
 const logEl = byId("log");
 const logNumberEl = byId("logNumber");
-const tabBarEl = byId("tabBar");
-const primaryBtn = byId("primaryBtn") as HTMLButtonElement;
-const endSessionBtn = byId("endSessionBtn") as HTMLButtonElement;
-const resetBtn = byId("resetBtn") as HTMLButtonElement;
 const updateBtn = byId("updateBtn") as HTMLButtonElement;
 const buildStampEl = byId("buildStamp");
 const bodyWeightInput = byId("bodyWeightInput") as HTMLInputElement;
 const weightUnitSelectorEl = byId("weightUnitSelector");
 
-buildDialTicks();
-renderDialNumerals();
-renderTally([]);
+// ─── Sets tab refs ────────────────────────────────────────────
+const setsDialFillEl = byId("dialFill-sets") as unknown as SVGCircleElement;
+const setsDialCenterEl = byId("dialCenter-sets");
+const setsEyebrowEl = byId("eyebrow-sets");
+const setsBigEl = byId("big-sets");
+const setsDialStatusEl = byId("dialStatus-sets");
+const setsRepStepperEl = byId("repStepper-sets");
+const setsTallyEl = byId("tally-sets");
+const setsElapsedEl = byId("elapsed-sets");
+const setsBandSelectorEl = byId("bandSelector-sets");
+const setsPrimaryBtn = byId("primaryBtn-sets") as HTMLButtonElement;
+const setsEndBtn = byId("endSessionBtn-sets") as HTMLButtonElement;
+const setsResetBtn = byId("resetBtn-sets") as HTMLButtonElement;
+
+// ─── EMOM tab refs ────────────────────────────────────────────
+const emomDialFillEl = byId("dialFill-emom") as unknown as SVGCircleElement;
+const emomDialCenterEl = byId("dialCenter-emom");
+const emomEyebrowEl = byId("eyebrow-emom");
+const emomBigEl = byId("big-emom");
+const emomDialStatusEl = byId("dialStatus-emom");
+const emomRepStepperEl = byId("repStepper-emom");
+const emomTallyEl = byId("tally-emom");
+const emomElapsedEl = byId("elapsed-emom");
+const emomBandSelectorEl = byId("bandSelector-emom");
+const emomPrimaryBtn = byId("primaryBtn-emom") as HTMLButtonElement;
+const emomEndBtn = byId("endSessionBtn-emom") as HTMLButtonElement;
+const emomResetBtn = byId("resetBtn-emom") as HTMLButtonElement;
+const emomConfigEl = byId("emomConfig");
+const emomRepsValueEl = byId("emomRepsValue");
+const emomMinutesSelectorEl = byId("emomMinutesSelector");
+
+buildDialTicks("sets");
+buildDialTicks("emom");
+renderDialNumerals("sets");
+renderDialNumerals("emom");
+renderOpenTally([]);
+renderEmomTally([], emomMinutes);
 renderBuildStamp();
 renderLog();
 syncWeightUnitSelector();
 syncTabs();
+syncBandSelectors();
+syncEmomConfig();
 
 tabBarEl.addEventListener("click", (e) => {
   const target = e.target;
@@ -209,17 +259,21 @@ tabBarEl.addEventListener("click", (e) => {
   syncTabs();
 });
 
-bandSelectorEl.addEventListener("click", (e) => {
-  const target = e.target;
-  if (!(target instanceof HTMLElement)) return;
-  const btn = target.closest<HTMLButtonElement>("button[data-band]");
-  if (!btn || btn.disabled) return;
-  const next = btn.dataset.band as BandId | undefined;
-  if (!next || !BAND_IDS.includes(next)) return;
-  if (next === currentBand) return;
-  if (!canChangeBand()) return;
-  setBand(next);
-});
+function wireBandSelector(el: HTMLElement) {
+  el.addEventListener("click", (e) => {
+    const target = e.target;
+    if (!(target instanceof HTMLElement)) return;
+    const btn = target.closest<HTMLButtonElement>("button[data-band]");
+    if (!btn || btn.disabled) return;
+    const next = btn.dataset.band as BandId | undefined;
+    if (!next || !BAND_IDS.includes(next)) return;
+    if (next === currentBand) return;
+    if (!canChangeBand()) return;
+    setBand(next);
+  });
+}
+wireBandSelector(setsBandSelectorEl);
+wireBandSelector(emomBandSelectorEl);
 
 bodyWeightInput.addEventListener("input", () => {
   const raw = bodyWeightInput.value.trim();
@@ -250,62 +304,228 @@ weightUnitSelectorEl.addEventListener("click", (e) => {
 logEl.addEventListener("click", (e) => {
   const target = e.target;
   if (!(target instanceof HTMLElement)) return;
-  if (!target.closest("#clearLogBtn")) return;
-  if (sessions.length === 0) return;
-  if (!window.confirm("Clear the entire session log?")) return;
-  sessions = [];
-  saveSessions(sessions);
-  renderLog();
-  updateLogNumber();
+
+  if (target.closest("#clearLogBtn")) {
+    if (sessions.length === 0) return;
+    if (!window.confirm("Clear the entire session log?")) return;
+    sessions = [];
+    saveSessions(sessions);
+    renderLog();
+    updateLogNumber();
+    return;
+  }
+
+  const exportBtn = target.closest<HTMLButtonElement>("button[data-export]");
+  if (exportBtn) {
+    if (sessions.length === 0) return;
+    const kind = exportBtn.dataset.export;
+    if (kind === "png") void runExport("share-png", exportBtn);
+    else if (kind === "claude") void runExport("ask-claude", exportBtn);
+    else if (kind === "copy") void runExport("copy-prompt", exportBtn);
+  }
 });
 
-repStepperEl.addEventListener("click", (e) => {
+setsRepStepperEl.addEventListener("click", (e) => {
   const target = e.target;
   if (!(target instanceof HTMLElement)) return;
   const btn = target.closest<HTMLButtonElement>("button[data-step]");
   if (!btn) return;
   const step = Number(btn.dataset.step);
   if (!Number.isFinite(step)) return;
-  dialReps = Math.max(0, Math.min(MAX_DIAL_REPS, dialReps + step));
-  pulseBig();
+  setsApplyRepDelta(step);
 });
 
-primaryBtn.addEventListener("click", () => {
+emomRepStepperEl.addEventListener("click", (e) => {
+  const target = e.target;
+  if (!(target instanceof HTMLElement)) return;
+  const btn = target.closest<HTMLButtonElement>("button[data-step]");
+  if (!btn) return;
+  const step = Number(btn.dataset.step);
+  if (!Number.isFinite(step)) return;
+  emomApplyRepDelta(step);
+});
+
+function setsApplyRepDelta(delta: number) {
+  dialReps = Math.max(0, Math.min(MAX_DIAL_REPS, dialReps + delta));
+  pulseBig(setsDialCenterEl);
+}
+
+function emomApplyRepDelta(delta: number) {
+  emomTimer.adjustReps(delta);
+  pulseBig(emomDialCenterEl);
+}
+
+// ───────────────────────── KNOB INTERACTION ─────────────────────────
+// Drag the dial like a rotary knob: clockwise = +reps, counter-clockwise = -reps.
+
+const DEGREES_PER_REP = 18;
+
+function setupKnob(
+  dialStage: HTMLElement,
+  isActive: () => boolean,
+  applyDelta: (delta: number) => void,
+) {
+  let pointerId: number | null = null;
+  let lastAngle = 0;
+  let accumulated = 0;
+
+  function angleAt(clientX: number, clientY: number): number {
+    const rect = dialStage.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    return (Math.atan2(clientY - cy, clientX - cx) * 180) / Math.PI;
+  }
+
+  dialStage.addEventListener("pointerdown", (e) => {
+    if (!isActive()) return;
+    if (e.target instanceof Element && e.target.closest("button")) return;
+    pointerId = e.pointerId;
+    lastAngle = angleAt(e.clientX, e.clientY);
+    accumulated = 0;
+    dialStage.classList.add("grabbing");
+    try {
+      dialStage.setPointerCapture(e.pointerId);
+    } catch {
+      // ignore — capture unsupported
+    }
+    e.preventDefault();
+  });
+
+  dialStage.addEventListener("pointermove", (e) => {
+    if (e.pointerId !== pointerId) return;
+    const a = angleAt(e.clientX, e.clientY);
+    let delta = a - lastAngle;
+    if (delta > 180) delta -= 360;
+    if (delta < -180) delta += 360;
+    accumulated += delta;
+    lastAngle = a;
+    while (accumulated >= DEGREES_PER_REP) {
+      accumulated -= DEGREES_PER_REP;
+      applyDelta(1);
+    }
+    while (accumulated <= -DEGREES_PER_REP) {
+      accumulated += DEGREES_PER_REP;
+      applyDelta(-1);
+    }
+  });
+
+  function end(e: PointerEvent) {
+    if (e.pointerId !== pointerId) return;
+    pointerId = null;
+    accumulated = 0;
+    dialStage.classList.remove("grabbing");
+    try {
+      dialStage.releasePointerCapture(e.pointerId);
+    } catch {
+      // ignore
+    }
+  }
+  dialStage.addEventListener("pointerup", end);
+  dialStage.addEventListener("pointercancel", end);
+}
+
+setupKnob(
+  setsDialCenterEl.parentElement as HTMLElement,
+  () => setsTimer.currentPhase === "logging",
+  setsApplyRepDelta,
+);
+setupKnob(
+  emomDialCenterEl.parentElement as HTMLElement,
+  () => emomTimer.currentPhase === "working",
+  emomApplyRepDelta,
+);
+
+emomConfigEl.addEventListener("click", (e) => {
+  const target = e.target;
+  if (!(target instanceof HTMLElement)) return;
+
+  const repsBtn = target.closest<HTMLButtonElement>("button[data-emom-reps]");
+  if (repsBtn) {
+    if (!canChangeEmomConfig()) return;
+    const delta = Number(repsBtn.dataset.emomReps);
+    if (!Number.isFinite(delta)) return;
+    emomReps = Math.max(MIN_EMOM_REPS, Math.min(MAX_EMOM_REPS, emomReps + delta));
+    emomTimer.setConfig(emomMinutes, emomReps);
+    saveEmomConfig({ reps: emomReps, minutes: emomMinutes });
+    syncEmomConfig();
+    return;
+  }
+
+  const minutesBtn = target.closest<HTMLButtonElement>("button[data-emom-minutes]");
+  if (minutesBtn) {
+    if (!canChangeEmomConfig()) return;
+    const next = Number(minutesBtn.dataset.emomMinutes) as EmomDuration;
+    if (!EMOM_DURATIONS.includes(next)) return;
+    if (next === emomMinutes) return;
+    emomMinutes = next;
+    emomTimer.setConfig(emomMinutes, emomReps);
+    saveEmomConfig({ reps: emomReps, minutes: emomMinutes });
+    syncEmomConfig();
+    renderEmomTally([], emomMinutes);
+    return;
+  }
+});
+
+setsPrimaryBtn.addEventListener("click", () => {
   unlockAudio();
   const now = performance.now();
-  switch (timer.currentPhase) {
+  switch (setsTimer.currentPhase) {
     case "idle":
     case "done":
       dialReps = DEFAULT_REPS_FOR_DIAL;
-      timer.start(now);
+      setsTimer.start(now);
       break;
     case "working":
-      timer.setDone(now);
+      setsTimer.setDone(now);
       break;
     case "logging":
-      timer.logReps(dialReps, now);
+      setsTimer.logReps(dialReps, now);
       break;
     case "resting":
-      timer.nextSet(now);
+      setsTimer.nextSet(now);
       break;
   }
 });
 
-endSessionBtn.addEventListener("click", () => {
+setsEndBtn.addEventListener("click", () => {
   const now = performance.now();
-  if (timer.currentPhase === "idle" || timer.currentPhase === "done") return;
-  if (timer.completedSets === 0 && timer.currentPhase !== "logging") {
+  if (setsTimer.currentPhase === "idle" || setsTimer.currentPhase === "done") return;
+  if (setsTimer.completedSets === 0 && setsTimer.currentPhase !== "logging") {
     if (!window.confirm("End session without logging any sets?")) return;
   }
-  timer.endSession(now);
+  setsTimer.endSession(now);
 });
 
-resetBtn.addEventListener("click", () => {
-  if (timer.currentPhase !== "idle" && timer.currentPhase !== "done") {
+setsResetBtn.addEventListener("click", () => {
+  if (setsTimer.currentPhase !== "idle" && setsTimer.currentPhase !== "done") {
     if (!window.confirm("Discard this session?")) return;
   }
-  timer.reset();
+  setsTimer.reset();
   dialReps = DEFAULT_REPS_FOR_DIAL;
+});
+
+emomPrimaryBtn.addEventListener("click", () => {
+  unlockAudio();
+  const now = performance.now();
+  const phase = emomTimer.currentPhase;
+  if (phase === "idle" || phase === "done") {
+    emomTimer.setConfig(emomMinutes, emomReps);
+    emomTimer.start(now);
+  }
+});
+
+emomEndBtn.addEventListener("click", () => {
+  const now = performance.now();
+  if (emomTimer.currentPhase !== "working") return;
+  if (!window.confirm("End the EMOM early?")) return;
+  emomTimer.end(now);
+});
+
+emomResetBtn.addEventListener("click", () => {
+  if (emomTimer.currentPhase === "working") {
+    if (!window.confirm("Discard this EMOM?")) return;
+  }
+  emomTimer.reset();
 });
 
 // ───────────────────────── APP UPDATES ─────────────────────────
@@ -396,22 +616,35 @@ function renderBuildStamp() {
 }
 
 let prevSetsCount = 0;
+let prevEmomSetsCount = 0;
 
 function frame(now: number) {
-  const view = timer.tick(now);
-  render(view);
-  if (view.enteredPhase === "working") {
+  const openView = setsTimer.tick(now);
+  renderOpen(openView);
+  if (openView.enteredPhase === "working") {
     beepRepCue();
-    pulseBig();
-  } else if (view.enteredPhase === "logging") {
-    const seed = timer.lastReps;
+    pulseBig(setsDialCenterEl);
+  } else if (openView.enteredPhase === "logging") {
+    const seed = setsTimer.lastReps;
     dialReps = seed === null ? DEFAULT_REPS_FOR_DIAL : seed;
     beepCountdown();
-    pulseBig();
-  } else if (view.enteredPhase === "done") {
+    pulseBig(setsDialCenterEl);
+  } else if (openView.enteredPhase === "done") {
     beepDone();
-    if (view.setsCompleted > 0) recordSession(view);
+    if (openView.setsCompleted > 0) recordOpenSession(openView);
   }
+
+  const emomView = emomTimer.tick(now);
+  renderEmom(emomView);
+  if (emomView.minuteCueAt !== null) {
+    beepRepCue();
+    pulseBig(emomDialCenterEl);
+  }
+  if (emomView.enteredPhase === "done") {
+    beepDone();
+    if (emomView.setsCompleted > 0) recordEmomSession(emomView);
+  }
+
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
@@ -419,27 +652,50 @@ requestAnimationFrame(frame);
 function setBand(id: BandId) {
   currentBand = id;
   saveBand(id);
-  syncBandSelector();
+  syncBandSelectors();
 }
 
 function canChangeBand(): boolean {
-  const p = timer.currentPhase;
+  const open = setsTimer.currentPhase;
+  const emom = emomTimer.currentPhase;
+  const openOk = open === "idle" || open === "done";
+  const emomOk = emom === "idle" || emom === "done";
+  return openOk && emomOk;
+}
+
+function canChangeEmomConfig(): boolean {
+  const p = emomTimer.currentPhase;
   return p === "idle" || p === "done";
 }
 
-function syncBandSelector() {
+function syncBandSelectors() {
   const canChange = canChangeBand();
-  for (const btn of bandSelectorEl.querySelectorAll<HTMLButtonElement>("button[data-band]")) {
-    const selected = btn.dataset.band === currentBand;
-    btn.setAttribute("aria-checked", String(selected));
-    btn.classList.toggle("active", selected);
-    btn.disabled = !canChange && !selected;
+  for (const root of [setsBandSelectorEl, emomBandSelectorEl]) {
+    for (const btn of root.querySelectorAll<HTMLButtonElement>("button[data-band]")) {
+      const selected = btn.dataset.band === currentBand;
+      btn.setAttribute("aria-checked", String(selected));
+      btn.classList.toggle("active", selected);
+      btn.disabled = !canChange && !selected;
+    }
   }
 }
 
 function syncWeightUnitSelector() {
   for (const btn of weightUnitSelectorEl.querySelectorAll<HTMLButtonElement>("button[data-unit]")) {
     const selected = btn.dataset.unit === currentWeightUnit;
+    btn.setAttribute("aria-checked", String(selected));
+    btn.classList.toggle("active", selected);
+  }
+}
+
+function syncEmomConfig() {
+  emomRepsValueEl.textContent = String(emomReps);
+  const editable = canChangeEmomConfig();
+  for (const btn of emomConfigEl.querySelectorAll<HTMLButtonElement>("button")) {
+    btn.disabled = !editable;
+  }
+  for (const btn of emomMinutesSelectorEl.querySelectorAll<HTMLButtonElement>("button[data-emom-minutes]")) {
+    const selected = Number(btn.dataset.emomMinutes) === emomMinutes;
     btn.setAttribute("aria-checked", String(selected));
     btn.classList.toggle("active", selected);
   }
@@ -457,77 +713,67 @@ function syncTabs() {
   }
 }
 
-function render(v: ViewState) {
-  bigEl.textContent = bigNumberText(v);
-  bigEl.classList.toggle("timer", v.phase === "working" || v.phase === "resting");
-  bigEl.classList.toggle("count", v.phase === "logging");
-  bigEl.classList.toggle("done-state", v.phase === "done");
+// ───────────────────────── OPEN-SETS RENDER ─────────────────────────
 
-  eyebrowEl.textContent = eyebrowLabel(v);
-  dialStatusEl.textContent = statusLabel(v);
-  repStepperEl.classList.toggle("hidden", v.phase !== "logging");
+function renderOpen(v: ViewState) {
+  setsBigEl.textContent = openBigText(v);
+  setsBigEl.classList.toggle("timer", v.phase === "working" || v.phase === "resting");
+  setsBigEl.classList.toggle("count", v.phase === "logging");
+  setsBigEl.classList.toggle("done-state", v.phase === "done");
 
-  applyDialFill(v);
+  setsEyebrowEl.textContent = openEyebrow(v);
+  setsDialStatusEl.textContent = openStatus(v);
+  setsRepStepperEl.classList.toggle("hidden", v.phase !== "logging");
+  (setsDialCenterEl.parentElement as HTMLElement).classList.toggle(
+    "grab-hint",
+    v.phase === "logging",
+  );
 
-  elapsedEl.textContent = formatClock(v.totalElapsedMs);
+  applyOpenDialFill(v);
+
+  setsElapsedEl.textContent = formatClock(v.totalElapsedMs);
 
   if (v.sets.length !== prevSetsCount || v.phase === "idle" || v.phase === "done") {
-    renderTally(v.sets);
+    renderOpenTally(v.sets);
     prevSetsCount = v.sets.length;
   }
 
-  syncBandSelector();
+  syncBandSelectors();
 
-  primaryBtn.className = `primary ${v.phase}`;
-  primaryBtn.textContent = primaryLabel(v);
+  setsPrimaryBtn.className = `primary ${v.phase}`;
+  setsPrimaryBtn.textContent = openPrimaryLabel(v);
 
-  endSessionBtn.classList.toggle(
-    "hidden",
-    v.phase === "idle" || v.phase === "done",
-  );
-  endSessionBtn.disabled = v.phase === "idle" || v.phase === "done";
+  setsEndBtn.classList.toggle("hidden", v.phase === "idle" || v.phase === "done");
+  setsEndBtn.disabled = v.phase === "idle" || v.phase === "done";
 
-  resetBtn.disabled = v.phase === "idle";
+  setsResetBtn.disabled = v.phase === "idle";
 }
 
-function bigNumberText(v: ViewState): string {
+function openBigText(v: ViewState): string {
   switch (v.phase) {
-    case "idle":
-      return "0:00";
-    case "working":
-      return formatClock(v.workElapsedMs);
-    case "logging":
-      return pad2(dialReps);
-    case "resting":
-      return formatClock(v.restElapsedMs);
-    case "done":
-      return String(v.totalReps);
+    case "idle": return "0:00";
+    case "working": return formatClock(v.workElapsedMs);
+    case "logging": return pad2(dialReps);
+    case "resting": return formatClock(v.restElapsedMs);
+    case "done": return String(v.totalReps);
   }
 }
 
-function eyebrowLabel(v: ViewState): string {
+function openEyebrow(v: ViewState): string {
   switch (v.phase) {
-    case "idle":
-      return "READY";
-    case "working":
-      return `SET ${pad2(v.setNumber)}`;
-    case "logging":
-      return `LOG SET ${pad2(v.setNumber)}`;
-    case "resting":
-      return "REST";
-    case "done":
-      return "DONE";
+    case "idle": return "READY";
+    case "working": return `SET ${pad2(v.setNumber)}`;
+    case "logging": return `LOG SET ${pad2(v.setNumber)}`;
+    case "resting": return "REST";
+    case "done": return "DONE";
   }
 }
 
-function statusLabel(v: ViewState): string {
+function openStatus(v: ViewState): string {
   switch (v.phase) {
-    case "idle":
-      return "TAP START SESSION";
-    case "working":
-      return "TAP DONE SET WHEN FINISHED";
-    case "logging":
-      return "DIAL REPS · TAP CONFIRM";
+    case "idle": return "TAP START SESSION";
+    case "working": return "TAP DONE SET WHEN FINISHED";
+    case "logging": return "DRAG DIAL FOR REPS · TAP CONFIRM";
     case "resting":
       return v.totalReps === 0
         ? "REST · TAP START SET WHEN READY"
@@ -537,34 +783,18 @@ function statusLabel(v: ViewState): string {
   }
 }
 
-function primaryLabel(v: ViewState): string {
+function openPrimaryLabel(v: ViewState): string {
   switch (v.phase) {
-    case "idle":
-      return "START SESSION";
-    case "working":
-      return "DONE SET";
-    case "logging":
-      return `CONFIRM ${pad2(dialReps)}`;
-    case "resting":
-      return "START SET";
-    case "done":
-      return "NEW SESSION";
+    case "idle": return "START SESSION";
+    case "working": return "DONE SET";
+    case "logging": return `CONFIRM ${pad2(dialReps)}`;
+    case "resting": return "START SET";
+    case "done": return "NEW SESSION";
   }
 }
 
-function tabLabel(t: TabId): string {
-  switch (t) {
-    case "workout":
-      return "Workout";
-    case "log":
-      return "Log";
-    case "settings":
-      return "Settings";
-  }
-}
-
-function applyDialFill(v: ViewState) {
-  const fill = dialFillEl;
+function applyOpenDialFill(v: ViewState) {
+  const fill = setsDialFillEl;
   fill.classList.remove("idle", "working", "logging", "resting", "done");
   fill.classList.add(v.phase);
 
@@ -579,14 +809,364 @@ function applyDialFill(v: ViewState) {
   fill.setAttribute("stroke-dashoffset", offset.toFixed(2));
 }
 
-function pulseBig() {
-  dialCenterEl.classList.remove("pulse-now");
-  void dialCenterEl.offsetWidth;
-  dialCenterEl.classList.add("pulse-now");
+function renderOpenTally(sets: ReadonlyArray<SetRecord>) {
+  if (sets.length === 0) {
+    setsTallyEl.innerHTML = `<div class="tally-empty">No sets logged yet</div>`;
+    return;
+  }
+  setsTallyEl.innerHTML = sets
+    .map(
+      (s, i) =>
+        `<div class="tally-set"><span class="tally-set-n">${pad2(i + 1)}</span><span class="tally-set-reps">${s.reps}</span></div>`,
+    )
+    .join("");
 }
 
-function buildDialTicks() {
-  const ticksGroup = byId("dialTicks");
+// ───────────────────────── EMOM RENDER ─────────────────────────
+
+function renderEmom(v: EmomViewState) {
+  emomBigEl.textContent = emomBigText(v);
+  emomBigEl.classList.toggle("timer", false);
+  emomBigEl.classList.toggle("count", v.phase === "working");
+  emomBigEl.classList.toggle("done-state", v.phase === "done");
+
+  emomEyebrowEl.textContent = emomEyebrow(v);
+  emomDialStatusEl.textContent = emomStatus(v);
+  emomRepStepperEl.classList.toggle("hidden", v.phase !== "working");
+  emomConfigEl.classList.toggle("locked", v.phase === "working");
+  (emomDialCenterEl.parentElement as HTMLElement).classList.toggle(
+    "grab-hint",
+    v.phase === "working",
+  );
+
+  applyEmomDialFill(v);
+
+  emomElapsedEl.textContent = formatClock(v.totalElapsedMs);
+
+  if (v.sets.length !== prevEmomSetsCount || v.phase === "idle" || v.phase === "done") {
+    renderEmomTally(v.sets, v.totalMinutes);
+    prevEmomSetsCount = v.sets.length;
+  }
+
+  syncBandSelectors();
+
+  emomPrimaryBtn.className = `primary ${v.phase === "working" ? "working" : v.phase === "done" ? "done" : "idle"}`;
+  emomPrimaryBtn.textContent = emomPrimaryLabel(v);
+  emomPrimaryBtn.disabled = v.phase === "working";
+
+  emomEndBtn.classList.toggle("hidden", v.phase !== "working");
+  emomEndBtn.disabled = v.phase !== "working";
+
+  emomResetBtn.disabled = v.phase === "idle";
+}
+
+function emomBigText(v: EmomViewState): string {
+  switch (v.phase) {
+    case "idle": return pad2(v.targetRepsPerMin);
+    case "working": return pad2(v.currentMinuteReps);
+    case "done": return String(v.totalReps);
+  }
+}
+
+function emomEyebrow(v: EmomViewState): string {
+  switch (v.phase) {
+    case "idle": return "EMOM · READY";
+    case "working": return `MIN ${pad2(v.minuteNumber)} / ${pad2(v.totalMinutes)}`;
+    case "done": return "EMOM DONE";
+  }
+}
+
+function emomStatus(v: EmomViewState): string {
+  switch (v.phase) {
+    case "idle":
+      return `${v.targetRepsPerMin} REPS × ${v.totalMinutes} MIN · TAP START`;
+    case "working":
+      return `${formatClock(v.minuteRemainingMs)} TO NEXT MIN · DIAL REPS`;
+    case "done":
+      return `${v.totalReps} REPS · ${v.setsCompleted}/${v.totalMinutes} MIN · ${formatClock(v.totalElapsedMs)}`;
+  }
+}
+
+function emomPrimaryLabel(v: EmomViewState): string {
+  switch (v.phase) {
+    case "idle": return "START EMOM";
+    case "working": return `MIN ${pad2(v.minuteNumber)}`;
+    case "done": return "NEW EMOM";
+  }
+}
+
+function applyEmomDialFill(v: EmomViewState) {
+  const fill = emomDialFillEl;
+  fill.classList.remove("idle", "working", "logging", "resting", "done");
+  fill.classList.add(v.phase === "working" ? "resting" : v.phase);
+
+  let offset = DIAL_PATH_LENGTH;
+  if (v.phase === "working") {
+    const frac = (v.minuteElapsedMs % LAP_MS) / LAP_MS;
+    offset = (1 - frac) * DIAL_PATH_LENGTH;
+  }
+  fill.setAttribute("stroke-dashoffset", offset.toFixed(2));
+}
+
+function renderEmomTally(sets: ReadonlyArray<EmomSetRecord>, totalMinutes: number) {
+  if (sets.length === 0) {
+    emomTallyEl.innerHTML = `<div class="tally-empty">${totalMinutes} min EMOM — no minutes logged yet</div>`;
+    return;
+  }
+  emomTallyEl.innerHTML = sets
+    .map(
+      (s, i) =>
+        `<div class="tally-set"><span class="tally-set-n">M${pad2(i + 1)}</span><span class="tally-set-reps">${s.reps}</span></div>`,
+    )
+    .join("");
+}
+
+// ───────────────────────── LOG / EXPORT ─────────────────────────
+
+type ExportKind = "share-png" | "ask-claude" | "copy-prompt";
+let exportBusy = false;
+
+async function runExport(kind: ExportKind, btn: HTMLButtonElement): Promise<void> {
+  if (exportBusy) return;
+  if (sessions.length === 0) return;
+  const session = toExportSession(sessions[0]);
+  exportBusy = true;
+  const row = logEl.querySelector<HTMLElement>(".log-actions");
+  row?.classList.add("busy");
+  btn.disabled = true;
+  setLogStatus(workingLabel(kind), "info");
+  try {
+    if (kind === "share-png") setLogStatus(pngMsg(await shareSessionPng(session)), "ok");
+    else if (kind === "ask-claude") setLogStatus(claudeMsg(await analyzeSessionInClaude(session)), "ok");
+    else setLogStatus(copyMsg(await copySessionPrompt(session)), "ok");
+  } catch {
+    setLogStatus("Something went wrong — try again.", "err");
+  } finally {
+    exportBusy = false;
+    row?.classList.remove("busy");
+    btn.disabled = false;
+  }
+}
+
+function workingLabel(kind: ExportKind): string {
+  switch (kind) {
+    case "share-png": return "Rendering PNG…";
+    case "ask-claude": return "Opening Claude…";
+    case "copy-prompt": return "Copying prompt…";
+  }
+}
+
+function pngMsg(r: ShareResult): string {
+  return r === "shared"
+    ? "Shared — pick where to send it."
+    : "Saved as PNG to your downloads.";
+}
+
+function claudeMsg(r: AnalyzeResult): string {
+  switch (r) {
+    case "shared": return "Shared — pick Claude from the sheet.";
+    case "copied-opened": return "Prompt copied — paste it into the Claude tab.";
+    case "copied": return "Prompt copied — paste it into Claude.";
+    case "downloaded": return "Saved the prompt as a Markdown file.";
+  }
+}
+
+function copyMsg(r: CopyResult): string {
+  return r === "copied"
+    ? "Copied — paste into any AI (Claude, ChatGPT, Gemini…)."
+    : "Clipboard unavailable — saved as Markdown instead.";
+}
+
+function setLogStatus(message: string, kind: "ok" | "err" | "info"): void {
+  const el = document.getElementById("logStatus");
+  if (!el) return;
+  el.textContent = message;
+  el.className = `log-status log-status-${kind}`;
+}
+
+function toExportSession(s: Session): SessionData {
+  const base = {
+    date: s.date,
+    band: s.band,
+    bandLabel: bandTitle(s.band),
+    bandColor: bandColor(s.band),
+    elapsedMs: s.elapsedMs,
+    totalReps: s.totalReps,
+    bodyWeightKg: currentBodyWeight,
+    weightUnit: currentWeightUnit,
+  };
+  if (s.type === "emom") {
+    return {
+      ...base,
+      type: "emom",
+      targetRepsPerMin: s.targetRepsPerMin,
+      targetMinutes: s.targetMinutes,
+      sets: s.sets,
+    };
+  }
+  return { ...base, type: "open", sets: s.sets };
+}
+
+// ───────────────────────── SESSION RECORD ─────────────────────────
+
+function recordOpenSession(v: ViewState) {
+  const session: OpenSession = {
+    type: "open",
+    date: new Date().toISOString(),
+    band: currentBand,
+    elapsedMs: Math.round(v.totalElapsedMs),
+    totalReps: v.totalReps,
+    sets: v.sets.map((s) => ({ ...s })),
+  };
+  pushSession(session);
+}
+
+function recordEmomSession(v: EmomViewState) {
+  const session: EmomSession = {
+    type: "emom",
+    date: new Date().toISOString(),
+    band: currentBand,
+    elapsedMs: Math.round(v.totalElapsedMs),
+    totalReps: v.totalReps,
+    targetRepsPerMin: v.targetRepsPerMin,
+    targetMinutes: v.totalMinutes,
+    sets: v.sets.map((s) => ({ ...s })),
+  };
+  pushSession(session);
+}
+
+function pushSession(session: Session) {
+  sessions.unshift(session);
+  if (sessions.length > MAX_SESSIONS) sessions.length = MAX_SESSIONS;
+  saveSessions(sessions);
+  renderLog();
+  updateLogNumber();
+}
+
+function updateLogNumber() {
+  logNumberEl.textContent = `LOG N° ${pad3(sessions.length + 1)}`;
+}
+
+function renderLog() {
+  if (sessions.length === 0) {
+    logEl.innerHTML = `<div class="log-empty">No sessions logged yet — finish a workout to start your log.</div>`;
+    return;
+  }
+
+  const recent = sessions.slice(0, LOG_DISPLAY_LIMIT);
+  const rows = recent
+    .map((s) => {
+      const typeChip = s.type === "emom" ? "EMOM" : "OPEN";
+      const detail =
+        s.type === "emom"
+          ? `${s.sets.length}/${s.targetMinutes} min`
+          : `${s.sets.length} sets`;
+      return `
+      <li class="log-item">
+        <span class="log-band${s.band === "none" ? " none" : ""}" style="--band:${bandColor(s.band)}" title="${bandTitle(s.band)}"></span>
+        <span class="log-type log-type-${s.type}">${typeChip}</span>
+        <span class="log-reps">${s.totalReps}</span>
+        <span class="log-pace" title="${s.type === "emom" ? "Minutes completed" : "Sets"}">${detail}</span>
+        <span class="log-date">${formatLogDate(s.date)}</span>
+        <span class="log-time">${formatClock(s.elapsedMs)}</span>
+      </li>`;
+    })
+    .join("");
+
+  const more =
+    sessions.length > LOG_DISPLAY_LIMIT
+      ? `<div class="log-more">+${sessions.length - LOG_DISPLAY_LIMIT} earlier</div>`
+      : "";
+
+  logEl.innerHTML = `
+    <div class="log-export">
+      <div class="log-export-head">
+        <span class="log-export-caption">Latest workout</span>
+        <span class="log-export-hint">Send to Claude for coaching</span>
+      </div>
+      <div class="log-actions">
+        <button type="button" class="log-action" data-export="png" aria-label="Share latest workout as PNG image">Share PNG</button>
+        <button type="button" class="log-action accent" data-export="claude" aria-label="Ask Claude about latest workout">Ask Claude ▸</button>
+        <button type="button" class="log-action" data-export="copy" aria-label="Copy latest workout as prompt for any AI">Copy prompt</button>
+      </div>
+      <p class="log-status" id="logStatus" role="status" aria-live="polite"></p>
+    </div>
+    <div class="log-head">
+      <span class="log-title">Session Log</span>
+      <button type="button" class="log-clear" id="clearLogBtn">Clear</button>
+    </div>
+    <ol class="log-list">${rows}</ol>
+    ${more}
+  `;
+}
+
+// ───────────────────────── DIAL MARKUP ─────────────────────────
+
+function renderBandSelectorHtml(scope: "sets" | "emom"): string {
+  return `
+    <section class="bands" id="bandSelector-${scope}" role="radiogroup" aria-label="Resistance band">
+      <div class="bands-caption">Resistance band</div>
+      <div class="bands-row">
+        ${BANDS.map(
+          (b) =>
+            `<button type="button" role="radio" class="band-chip" data-band="${b.id}" aria-checked="${b.id === currentBand}" aria-label="${bandTitle(b.id)}" style="--band:${b.color}"><span class="band-dot${b.id === "none" ? " none" : ""}"></span><span class="band-name">${b.label}</span></button>`,
+        ).join("")}
+      </div>
+    </section>
+  `;
+}
+
+function renderDialHtml(scope: "sets" | "emom"): string {
+  return `
+    <div class="dial-stage">
+      <svg class="dial" id="dial-${scope}" viewBox="0 0 340 340" aria-hidden="true">
+        <defs>
+          <radialGradient id="dialFace-${scope}" cx="50%" cy="40%" r="66%">
+            <stop offset="0%" stop-color="#f4eddc" />
+            <stop offset="58%" stop-color="#e9dec3" />
+            <stop offset="100%" stop-color="#d6c79f" />
+          </radialGradient>
+          <filter id="dialEmboss-${scope}" x="-25%" y="-25%" width="150%" height="150%">
+            <feDropShadow dx="0" dy="3" stdDeviation="5" flood-color="#15110d" flood-opacity="0.17" />
+          </filter>
+        </defs>
+        <circle class="dial-face" cx="170" cy="170" r="154" fill="url(#dialFace-${scope})" filter="url(#dialEmboss-${scope})" />
+        <circle class="dial-rim" cx="170" cy="170" r="154" />
+        <g class="dial-ticks" id="dialTicks-${scope}"></g>
+        <g class="dial-numerals" id="dialNumerals-${scope}"></g>
+        <circle class="dial-track" cx="170" cy="170" r="138" />
+        <circle
+          class="dial-fill idle"
+          id="dialFill-${scope}"
+          cx="170"
+          cy="170"
+          r="138"
+          pathLength="${DIAL_PATH_LENGTH}"
+          stroke-dasharray="${DIAL_PATH_LENGTH} ${DIAL_PATH_LENGTH}"
+          stroke-dashoffset="${DIAL_PATH_LENGTH}"
+        />
+      </svg>
+      <div class="dial-center" id="dialCenter-${scope}">
+        <div class="eyebrow" id="eyebrow-${scope}">READY</div>
+        <div class="big-number" id="big-${scope}">0:00</div>
+        <div class="dial-status" id="dialStatus-${scope}">PRESS START SESSION</div>
+        <div class="rep-stepper hidden" id="repStepper-${scope}" aria-label="Reps">
+          <button type="button" class="step-btn" data-step="-1" aria-label="Decrease reps">−</button>
+          <button type="button" class="step-btn" data-step="1" aria-label="Increase reps">+</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function pulseBig(centerEl: HTMLElement) {
+  centerEl.classList.remove("pulse-now");
+  void centerEl.offsetWidth;
+  centerEl.classList.add("pulse-now");
+}
+
+function buildDialTicks(scope: "sets" | "emom") {
+  const ticksGroup = byId(`dialTicks-${scope}`);
   const cx = 170;
   const cy = 170;
 
@@ -609,8 +1189,8 @@ function buildDialTicks() {
   }
 }
 
-function renderDialNumerals() {
-  const numeralsGroup = byId("dialNumerals");
+function renderDialNumerals(scope: "sets" | "emom") {
+  const numeralsGroup = byId(`dialNumerals-${scope}`);
   numeralsGroup.innerHTML = "";
   const cx = 170;
   const cy = 170;
@@ -633,19 +1213,6 @@ function renderDialNumerals() {
     text.textContent = label;
     numeralsGroup.appendChild(text);
   }
-}
-
-function renderTally(sets: ReadonlyArray<SetRecord>) {
-  if (sets.length === 0) {
-    tallyEl.innerHTML = `<div class="tally-empty">No sets logged yet</div>`;
-    return;
-  }
-  tallyEl.innerHTML = sets
-    .map(
-      (s, i) =>
-        `<div class="tally-set"><span class="tally-set-n">${pad2(i + 1)}</span><span class="tally-set-reps">${s.reps}</span></div>`,
-    )
-    .join("");
 }
 
 function pad2(n: number): string {
@@ -722,6 +1289,36 @@ function saveWeightUnit(u: WeightUnit) {
   }
 }
 
+function loadEmomConfig(): { reps: number; minutes: EmomDuration } {
+  try {
+    const raw = localStorage.getItem(EMOM_CONFIG_KEY);
+    if (!raw) return { reps: DEFAULT_EMOM_REPS, minutes: DEFAULT_EMOM_MINUTES };
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null) {
+      return { reps: DEFAULT_EMOM_REPS, minutes: DEFAULT_EMOM_MINUTES };
+    }
+    const c = parsed as Record<string, unknown>;
+    const reps =
+      typeof c.reps === "number" && c.reps >= MIN_EMOM_REPS && c.reps <= MAX_EMOM_REPS
+        ? Math.floor(c.reps)
+        : DEFAULT_EMOM_REPS;
+    const minutes = EMOM_DURATIONS.includes(c.minutes as EmomDuration)
+      ? (c.minutes as EmomDuration)
+      : DEFAULT_EMOM_MINUTES;
+    return { reps, minutes };
+  } catch {
+    return { reps: DEFAULT_EMOM_REPS, minutes: DEFAULT_EMOM_MINUTES };
+  }
+}
+
+function saveEmomConfig(cfg: { reps: number; minutes: EmomDuration }) {
+  try {
+    localStorage.setItem(EMOM_CONFIG_KEY, JSON.stringify(cfg));
+  } catch {
+    // ignore
+  }
+}
+
 function loadSessions(): Session[] {
   try {
     const raw = localStorage.getItem(SESSIONS_KEY);
@@ -748,26 +1345,63 @@ function normalizeSession(x: unknown): Session | null {
   ) {
     return null;
   }
-  let sets: SetRecord[] = [];
-  if (Array.isArray(s.sets)) {
-    sets = s.sets.flatMap((raw): SetRecord[] => {
-      if (typeof raw !== "object" || raw === null) return [];
-      const r = raw as Record<string, unknown>;
-      if (typeof r.reps !== "number") return [];
-      return [
-        {
-          reps: r.reps,
-          workMs: typeof r.workMs === "number" ? r.workMs : 0,
-          restMsAfter: typeof r.restMsAfter === "number" ? r.restMsAfter : 0,
-        },
-      ];
-    });
+
+  const type: SessionType = s.type === "emom" ? "emom" : "open";
+
+  if (type === "emom") {
+    const targetRepsPerMin =
+      typeof s.targetRepsPerMin === "number" ? Math.max(0, Math.floor(s.targetRepsPerMin)) : 0;
+    const targetMinutes =
+      typeof s.targetMinutes === "number" ? Math.max(1, Math.floor(s.targetMinutes)) : 10;
+    const sets: EmomSetRecord[] = Array.isArray(s.sets)
+      ? s.sets.flatMap((raw): EmomSetRecord[] => {
+          if (typeof raw !== "object" || raw === null) return [];
+          const r = raw as Record<string, unknown>;
+          if (typeof r.reps !== "number") return [];
+          return [
+            {
+              reps: r.reps,
+              workMs: typeof r.workMs === "number" ? r.workMs : 0,
+            },
+          ];
+        })
+      : [];
+    const totalReps =
+      typeof s.totalReps === "number"
+        ? s.totalReps
+        : sets.reduce((sum, set) => sum + set.reps, 0);
+    return {
+      type: "emom",
+      date: s.date,
+      band: s.band as BandId,
+      elapsedMs: s.elapsedMs,
+      totalReps,
+      targetRepsPerMin,
+      targetMinutes,
+      sets,
+    };
   }
+
+  const sets: SetRecord[] = Array.isArray(s.sets)
+    ? s.sets.flatMap((raw): SetRecord[] => {
+        if (typeof raw !== "object" || raw === null) return [];
+        const r = raw as Record<string, unknown>;
+        if (typeof r.reps !== "number") return [];
+        return [
+          {
+            reps: r.reps,
+            workMs: typeof r.workMs === "number" ? r.workMs : 0,
+            restMsAfter: typeof r.restMsAfter === "number" ? r.restMsAfter : 0,
+          },
+        ];
+      })
+    : [];
   const totalReps =
     typeof s.totalReps === "number"
       ? s.totalReps
       : sets.reduce((sum, set) => sum + set.reps, 0);
   return {
+    type: "open",
     date: s.date,
     band: s.band as BandId,
     elapsedMs: s.elapsedMs,
@@ -784,60 +1418,6 @@ function saveSessions(list: Session[]) {
   }
 }
 
-function recordSession(v: ViewState) {
-  const session: Session = {
-    date: new Date().toISOString(),
-    band: currentBand,
-    elapsedMs: Math.round(v.totalElapsedMs),
-    totalReps: v.totalReps,
-    sets: v.sets.map((s) => ({ ...s })),
-  };
-  sessions.unshift(session);
-  if (sessions.length > MAX_SESSIONS) sessions.length = MAX_SESSIONS;
-  saveSessions(sessions);
-  renderLog();
-  updateLogNumber();
-}
-
-function updateLogNumber() {
-  logNumberEl.textContent = `LOG N° ${pad3(sessions.length + 1)}`;
-}
-
-function renderLog() {
-  if (sessions.length === 0) {
-    logEl.innerHTML = `<div class="log-empty">No sessions logged yet — finish a workout to start your log.</div>`;
-    return;
-  }
-
-  const recent = sessions.slice(0, LOG_DISPLAY_LIMIT);
-  const rows = recent
-    .map(
-      (s) => `
-      <li class="log-item">
-        <span class="log-band${s.band === "none" ? " none" : ""}" style="--band:${bandColor(s.band)}" title="${bandTitle(s.band)}"></span>
-        <span class="log-reps">${s.totalReps}</span>
-        <span class="log-pace" title="Sets">${s.sets.length} sets</span>
-        <span class="log-date">${formatLogDate(s.date)}</span>
-        <span class="log-time">${formatClock(s.elapsedMs)}</span>
-      </li>`,
-    )
-    .join("");
-
-  const more =
-    sessions.length > LOG_DISPLAY_LIMIT
-      ? `<div class="log-more">+${sessions.length - LOG_DISPLAY_LIMIT} earlier</div>`
-      : "";
-
-  logEl.innerHTML = `
-    <div class="log-head">
-      <span class="log-title">Session Log</span>
-      <button type="button" class="log-clear" id="clearLogBtn">Clear</button>
-    </div>
-    <ol class="log-list">${rows}</ol>
-    ${more}
-  `;
-}
-
 function bandColor(id: BandId): string {
   return (BANDS.find((b) => b.id === id) ?? BANDS[0]).color;
 }
@@ -848,6 +1428,15 @@ function bandLabel(id: BandId): string {
 
 function bandTitle(id: BandId): string {
   return id === "none" ? "No band" : `${bandLabel(id)} band`;
+}
+
+function tabLabel(t: TabId): string {
+  switch (t) {
+    case "sets": return "Sets";
+    case "emom": return "EMOM";
+    case "log": return "Log";
+    case "settings": return "Settings";
+  }
 }
 
 function formatLogDate(iso: string): string {
