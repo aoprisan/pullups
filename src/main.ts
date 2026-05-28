@@ -22,9 +22,16 @@ type BandId = (typeof BANDS)[number]["id"];
 const BAND_IDS = BANDS.map((b) => b.id) as readonly BandId[];
 const DEFAULT_BAND: BandId = "green";
 
-const TABS = ["workout", "log"] as const;
+const TABS = ["workout", "log", "settings"] as const;
 type TabId = (typeof TABS)[number];
 const DEFAULT_TAB: TabId = "workout";
+
+const WEIGHT_UNITS = ["kg", "lb"] as const;
+type WeightUnit = (typeof WEIGHT_UNITS)[number];
+const DEFAULT_WEIGHT_UNIT: WeightUnit = "kg";
+const BODY_WEIGHT_KEY = "pullups.bodyWeight";
+const WEIGHT_UNIT_KEY = "pullups.weightUnit";
+const MAX_BODY_WEIGHT = 500;
 
 interface Session {
   date: string;
@@ -43,6 +50,8 @@ let currentRpm: Rpm = loadRpm();
 let currentBand: BandId = loadBand();
 let sessions: Session[] = loadSessions();
 let currentTab: TabId = DEFAULT_TAB;
+let currentBodyWeight: number | null = loadBodyWeight();
+let currentWeightUnit: WeightUnit = loadWeightUnit();
 let prevRenderedPhase: Phase = "idle";
 let timer = new PullupTimer({
   totalReps: currentReps,
@@ -145,6 +154,33 @@ app.innerHTML = `
     <section class="log" id="log" aria-label="Session log"></section>
   </section>
 
+  <section class="tab-panel hidden" id="panel-settings" role="tabpanel" aria-labelledby="tab-settings">
+    <section class="settings-field">
+      <label class="settings-caption" for="bodyWeightInput">Body weight</label>
+      <div class="settings-weight">
+        <input
+          type="number"
+          inputmode="decimal"
+          id="bodyWeightInput"
+          class="weight-input"
+          min="0"
+          max="${MAX_BODY_WEIGHT}"
+          step="0.1"
+          placeholder="—"
+          autocomplete="off"
+          value="${currentBodyWeight === null ? "" : String(currentBodyWeight)}"
+        />
+        <div class="seg seg-units" id="weightUnitSelector" role="radiogroup" aria-label="Weight unit" style="--cols: ${WEIGHT_UNITS.length}">
+          ${WEIGHT_UNITS.map(
+            (u) =>
+              `<button type="button" role="radio" data-unit="${u}" aria-checked="${u === currentWeightUnit}">${u.toUpperCase()}</button>`,
+          ).join("")}
+        </div>
+      </div>
+      <p class="settings-hint">Saved on this device. Used to track your loaded weight over time.</p>
+    </section>
+  </section>
+
   <div class="controls">
     <button class="primary idle" id="primaryBtn">START</button>
     <button class="secondary" id="resetBtn">Reset workout</button>
@@ -173,12 +209,15 @@ const primaryBtn = byId("primaryBtn") as HTMLButtonElement;
 const resetBtn = byId("resetBtn") as HTMLButtonElement;
 const updateBtn = byId("updateBtn") as HTMLButtonElement;
 const buildStampEl = byId("buildStamp");
+const bodyWeightInput = byId("bodyWeightInput") as HTMLInputElement;
+const weightUnitSelectorEl = byId("weightUnitSelector");
 
 buildDialTicks();
 renderDialNumerals(currentRpm);
 renderTally(0);
 renderBuildStamp();
 renderLog();
+syncWeightUnitSelector();
 syncTabs();
 
 tabBarEl.addEventListener("click", (e) => {
@@ -227,6 +266,32 @@ bandSelectorEl.addEventListener("click", (e) => {
   if (next === currentBand) return;
   if (!canChangeReps()) return;
   setBand(next);
+});
+
+bodyWeightInput.addEventListener("input", () => {
+  const raw = bodyWeightInput.value.trim();
+  if (raw === "") {
+    currentBodyWeight = null;
+    saveBodyWeight(null);
+    return;
+  }
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0 || n > MAX_BODY_WEIGHT) return;
+  currentBodyWeight = Math.round(n * 10) / 10;
+  saveBodyWeight(currentBodyWeight);
+});
+
+weightUnitSelectorEl.addEventListener("click", (e) => {
+  const target = e.target;
+  if (!(target instanceof HTMLElement)) return;
+  const btn = target.closest<HTMLButtonElement>("button[data-unit]");
+  if (!btn) return;
+  const next = btn.dataset.unit as WeightUnit | undefined;
+  if (!next || !WEIGHT_UNITS.includes(next)) return;
+  if (next === currentWeightUnit) return;
+  currentWeightUnit = next;
+  saveWeightUnit(next);
+  syncWeightUnitSelector();
 });
 
 logEl.addEventListener("click", (e) => {
@@ -457,6 +522,14 @@ function syncBandSelector() {
   }
 }
 
+function syncWeightUnitSelector() {
+  for (const btn of weightUnitSelectorEl.querySelectorAll<HTMLButtonElement>("button[data-unit]")) {
+    const selected = btn.dataset.unit === currentWeightUnit;
+    btn.setAttribute("aria-checked", String(selected));
+    btn.classList.toggle("active", selected);
+  }
+}
+
 function syncTabs() {
   for (const btn of tabBarEl.querySelectorAll<HTMLButtonElement>("button[data-tab]")) {
     const selected = btn.dataset.tab === currentTab;
@@ -572,6 +645,8 @@ function tabLabel(t: TabId): string {
       return "Workout";
     case "log":
       return "Log";
+    case "settings":
+      return "Settings";
   }
 }
 
@@ -762,6 +837,45 @@ function loadBand(): BandId {
 function saveBand(id: BandId) {
   try {
     localStorage.setItem("pullups.band", id);
+  } catch {
+    // ignore
+  }
+}
+
+function loadBodyWeight(): number | null {
+  try {
+    const raw = localStorage.getItem(BODY_WEIGHT_KEY);
+    if (raw === null || raw === "") return null;
+    const n = Number(raw);
+    if (Number.isFinite(n) && n > 0 && n <= MAX_BODY_WEIGHT) return n;
+  } catch {
+    // localStorage unavailable
+  }
+  return null;
+}
+
+function saveBodyWeight(n: number | null) {
+  try {
+    if (n === null) localStorage.removeItem(BODY_WEIGHT_KEY);
+    else localStorage.setItem(BODY_WEIGHT_KEY, String(n));
+  } catch {
+    // ignore
+  }
+}
+
+function loadWeightUnit(): WeightUnit {
+  try {
+    const raw = localStorage.getItem(WEIGHT_UNIT_KEY);
+    if (raw !== null && WEIGHT_UNITS.includes(raw as WeightUnit)) return raw as WeightUnit;
+  } catch {
+    // localStorage unavailable
+  }
+  return DEFAULT_WEIGHT_UNIT;
+}
+
+function saveWeightUnit(u: WeightUnit) {
+  try {
+    localStorage.setItem(WEIGHT_UNIT_KEY, u);
   } catch {
     // ignore
   }
