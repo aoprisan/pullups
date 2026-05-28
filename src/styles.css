@@ -390,6 +390,12 @@ body::before {
   justify-content: center;
   align-items: center;
   animation: rise 600ms cubic-bezier(0.16, 0.84, 0.36, 1) 180ms both;
+}
+
+/* Only swallow touch gestures while the dial is actually interactive — otherwise
+   the square stage blocks page-scrolling on mobile even though the dial is idle. */
+.dial-stage.grab-hint,
+.dial-stage.grabbing {
   touch-action: none;
 }
 

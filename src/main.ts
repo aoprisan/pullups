@@ -415,6 +415,14 @@ function setupKnob(
     return { dx, dy, dist: Math.hypot(dx, dy), angleDeg: (Math.atan2(dy, dx) * 180) / Math.PI };
   }
 
+  // Visible dial face radius in viewBox units (154) over half the 340-unit viewBox.
+  const DIAL_FACE_FRACTION = 154 / 170;
+  function isInsideDialFace(dist: number): boolean {
+    const rect = dialStage.getBoundingClientRect();
+    const halfMin = Math.min(rect.width, rect.height) / 2;
+    return dist <= halfMin * DIAL_FACE_FRACTION;
+  }
+
   function placeGrip(angleDeg: number) {
     const rad = (angleDeg * Math.PI) / 180;
     const x = 170 + Math.cos(rad) * GRIP_RADIUS;
@@ -441,6 +449,8 @@ function setupKnob(
     if (!isActive()) return;
     if (e.target instanceof Element && e.target.closest("button")) return;
     const v = vectorAt(e.clientX, e.clientY);
+    // Square stage, round dial — corners aren't the knob, so leave them alone.
+    if (!isInsideDialFace(v.dist)) return;
     pointerId = e.pointerId;
     lastAngle = v.angleDeg;
     accumulated = 0;
