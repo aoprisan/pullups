@@ -79,6 +79,7 @@ const LOG_DISPLAY_LIMIT = 6;
 let currentBand: BandId = loadBand();
 let sessions: Session[] = loadSessions();
 let currentTab: TabId = DEFAULT_TAB;
+let selectedSessionId: string | null = null;
 let currentBodyWeight: number | null = loadBodyWeight();
 let currentWeightUnit: WeightUnit = loadWeightUnit();
 let dialReps = DEFAULT_REPS_FOR_DIAL;
@@ -309,21 +310,44 @@ logEl.addEventListener("click", (e) => {
     if (sessions.length === 0) return;
     if (!window.confirm("Clear the entire session log?")) return;
     sessions = [];
+    selectedSessionId = null;
     saveSessions(sessions);
     renderLog();
     updateLogNumber();
     return;
   }
 
+  if (target.closest("#logBackBtn")) {
+    selectedSessionId = null;
+    renderLog();
+    return;
+  }
+
+  const openBtn = target.closest<HTMLButtonElement>("button[data-open-session]");
+  if (openBtn) {
+    const id = openBtn.dataset.openSession;
+    if (id && findSession(id)) {
+      selectedSessionId = id;
+      renderLog();
+    }
+    return;
+  }
+
   const exportBtn = target.closest<HTMLButtonElement>("button[data-export]");
   if (exportBtn) {
-    if (sessions.length === 0) return;
+    const id = exportBtn.dataset.sessionId ?? sessions[0]?.date ?? null;
+    const session = id ? findSession(id) : null;
+    if (!session) return;
     const kind = exportBtn.dataset.export;
-    if (kind === "png") void runExport("share-png", exportBtn);
-    else if (kind === "claude") void runExport("ask-claude", exportBtn);
-    else if (kind === "copy") void runExport("copy-prompt", exportBtn);
+    if (kind === "png") void runExport("share-png", exportBtn, session);
+    else if (kind === "claude") void runExport("ask-claude", exportBtn, session);
+    else if (kind === "copy") void runExport("copy-prompt", exportBtn, session);
   }
 });
+
+function findSession(id: string): Session | null {
+  return sessions.find((s) => s.date === id) ?? null;
+}
 
 setsRepStepperEl.addEventListener("click", (e) => {
   const target = e.target;
@@ -989,19 +1013,22 @@ function renderEmomTally(sets: ReadonlyArray<EmomSetRecord>, totalMinutes: numbe
 type ExportKind = "share-png" | "ask-claude" | "copy-prompt";
 let exportBusy = false;
 
-async function runExport(kind: ExportKind, btn: HTMLButtonElement): Promise<void> {
+async function runExport(
+  kind: ExportKind,
+  btn: HTMLButtonElement,
+  session: Session,
+): Promise<void> {
   if (exportBusy) return;
-  if (sessions.length === 0) return;
-  const session = toExportSession(sessions[0]);
+  const exportData = toExportSession(session);
   exportBusy = true;
-  const row = logEl.querySelector<HTMLElement>(".log-actions");
+  const row = btn.closest<HTMLElement>(".log-actions");
   row?.classList.add("busy");
   btn.disabled = true;
   setLogStatus(workingLabel(kind), "info");
   try {
-    if (kind === "share-png") setLogStatus(pngMsg(await shareSessionPng(session)), "ok");
-    else if (kind === "ask-claude") setLogStatus(claudeMsg(await analyzeSessionInClaude(session)), "ok");
-    else setLogStatus(copyMsg(await copySessionPrompt(session)), "ok");
+    if (kind === "share-png") setLogStatus(pngMsg(await shareSessionPng(exportData)), "ok");
+    else if (kind === "ask-claude") setLogStatus(claudeMsg(await analyzeSessionInClaude(exportData)), "ok");
+    else setLogStatus(copyMsg(await copySessionPrompt(exportData)), "ok");
   } catch {
     setLogStatus("Something went wrong — try again.", "err");
   } finally {
@@ -1112,8 +1139,18 @@ function updateLogNumber() {
 
 function renderLog() {
   if (sessions.length === 0) {
+    selectedSessionId = null;
     logEl.innerHTML = `<div class="log-empty">No sessions logged yet — finish a workout to start your log.</div>`;
     return;
+  }
+
+  if (selectedSessionId) {
+    const session = findSession(selectedSessionId);
+    if (session) {
+      logEl.innerHTML = renderSessionDetailHtml(session);
+      return;
+    }
+    selectedSessionId = null;
   }
 
   const recent = sessions.slice(0, LOG_DISPLAY_LIMIT);
@@ -1126,12 +1163,15 @@ function renderLog() {
           : `${s.sets.length} sets`;
       return `
       <li class="log-item">
-        <span class="log-band${s.band === "none" ? " none" : ""}" style="--band:${bandColor(s.band)}" title="${bandTitle(s.band)}"></span>
-        <span class="log-type log-type-${s.type}">${typeChip}</span>
-        <span class="log-reps">${s.totalReps}</span>
-        <span class="log-pace" title="${s.type === "emom" ? "Minutes completed" : "Sets"}">${detail}</span>
-        <span class="log-date">${formatLogDate(s.date)}</span>
-        <span class="log-time">${formatClock(s.elapsedMs)}</span>
+        <button type="button" class="log-item-btn" data-open-session="${escapeAttr(s.date)}" aria-label="Open ${typeChip.toLowerCase()} session from ${formatLogDate(s.date)}">
+          <span class="log-band${s.band === "none" ? " none" : ""}" style="--band:${bandColor(s.band)}" title="${bandTitle(s.band)}"></span>
+          <span class="log-type log-type-${s.type}">${typeChip}</span>
+          <span class="log-reps">${s.totalReps}</span>
+          <span class="log-pace" title="${s.type === "emom" ? "Minutes completed" : "Sets"}">${detail}</span>
+          <span class="log-date">${formatLogDate(s.date)}</span>
+          <span class="log-time">${formatClock(s.elapsedMs)}</span>
+          <span class="log-chevron" aria-hidden="true">›</span>
+        </button>
       </li>`;
     })
     .join("");
@@ -1141,6 +1181,7 @@ function renderLog() {
       ? `<div class="log-more">+${sessions.length - LOG_DISPLAY_LIMIT} earlier</div>`
       : "";
 
+  const latestSessionId = sessions[0]?.date ?? "";
   logEl.innerHTML = `
     <div class="log-export">
       <div class="log-export-head">
@@ -1148,9 +1189,9 @@ function renderLog() {
         <span class="log-export-hint">Send to Claude for coaching</span>
       </div>
       <div class="log-actions">
-        <button type="button" class="log-action" data-export="png" aria-label="Share latest workout as PNG image">Share PNG</button>
-        <button type="button" class="log-action accent" data-export="claude" aria-label="Ask Claude about latest workout">Ask Claude ▸</button>
-        <button type="button" class="log-action" data-export="copy" aria-label="Copy latest workout as prompt for any AI">Copy prompt</button>
+        <button type="button" class="log-action" data-export="png" data-session-id="${escapeAttr(latestSessionId)}" aria-label="Share latest workout as PNG image">Share PNG</button>
+        <button type="button" class="log-action accent" data-export="claude" data-session-id="${escapeAttr(latestSessionId)}" aria-label="Ask Claude about latest workout">Ask Claude ▸</button>
+        <button type="button" class="log-action" data-export="copy" data-session-id="${escapeAttr(latestSessionId)}" aria-label="Copy latest workout as prompt for any AI">Copy prompt</button>
       </div>
       <p class="log-status" id="logStatus" role="status" aria-live="polite"></p>
     </div>
@@ -1161,6 +1202,113 @@ function renderLog() {
     <ol class="log-list">${rows}</ol>
     ${more}
   `;
+}
+
+function renderSessionDetailHtml(s: Session): string {
+  const typeChip = s.type === "emom" ? "EMOM" : "OPEN";
+  const date = new Date(s.date);
+  const dateLabel = Number.isNaN(date.getTime())
+    ? ""
+    : new Intl.DateTimeFormat(undefined, {
+        weekday: "short",
+        day: "2-digit",
+        month: "short",
+        hour: "2-digit",
+        minute: "2-digit",
+      }).format(date);
+
+  const statCards =
+    s.type === "emom"
+      ? [
+          { label: "REPS", value: String(s.totalReps) },
+          { label: "MINUTES", value: `${s.sets.length}/${s.targetMinutes}` },
+          { label: "TIME", value: formatClock(s.elapsedMs) },
+        ]
+      : [
+          { label: "REPS", value: String(s.totalReps) },
+          { label: "SETS", value: String(s.sets.length) },
+          { label: "TIME", value: formatClock(s.elapsedMs) },
+        ];
+
+  const statsHtml = statCards
+    .map(
+      (c) =>
+        `<div class="detail-stat"><div class="detail-stat-label">${c.label}</div><div class="detail-stat-value">${c.value}</div></div>`,
+    )
+    .join("");
+
+  let breakdown: string;
+  if (s.type === "emom") {
+    const target = s.targetRepsPerMin;
+    const rows = s.sets
+      .map((set, i) => {
+        const diff = set.reps - target;
+        const tag =
+          diff >= 0
+            ? `<span class="detail-row-hit">✓ HIT</span>`
+            : `<span class="detail-row-miss">−${-diff}</span>`;
+        return `<tr><td>${pad2(i + 1)}</td><td class="detail-row-reps">${set.reps}</td><td>${tag}</td></tr>`;
+      })
+      .join("");
+    breakdown = `
+      <table class="detail-table">
+        <thead><tr><th>MIN</th><th>REPS</th><th class="detail-th-right">vs TARGET ${target}</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <p class="detail-foot">Target ${target} reps/min × ${s.targetMinutes} min</p>
+    `;
+  } else {
+    const rows = s.sets
+      .map((set, i) => {
+        const rest = i < s.sets.length - 1 ? formatClock(set.restMsAfter) : "—";
+        return `<tr><td>${pad2(i + 1)}</td><td class="detail-row-reps">${set.reps}</td><td>${formatClock(set.workMs)}</td><td>${rest}</td></tr>`;
+      })
+      .join("");
+    breakdown = `
+      <table class="detail-table">
+        <thead><tr><th>SET</th><th>REPS</th><th>WORK</th><th class="detail-th-right">REST AFTER</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    `;
+  }
+
+  return `
+    <button type="button" class="log-back" id="logBackBtn" aria-label="Back to log list">← Back to log</button>
+    <section class="session-detail">
+      <header class="detail-head">
+        <span class="log-type log-type-${s.type}">${typeChip}</span>
+        <span class="detail-date">${dateLabel}</span>
+        <span class="detail-band${s.band === "none" ? " none" : ""}" style="--band:${bandColor(s.band)}" title="${bandTitle(s.band)}"></span>
+      </header>
+      <div class="detail-stats">${statsHtml}</div>
+      <div class="detail-breakdown">${breakdown}</div>
+    </section>
+    <div class="log-export">
+      <div class="log-export-head">
+        <span class="log-export-caption">This workout</span>
+        <span class="log-export-hint">Send to Claude for coaching</span>
+      </div>
+      <div class="log-actions">
+        <button type="button" class="log-action" data-export="png" data-session-id="${escapeAttr(s.date)}" aria-label="Share this workout as PNG image">Share PNG</button>
+        <button type="button" class="log-action accent" data-export="claude" data-session-id="${escapeAttr(s.date)}" aria-label="Ask Claude about this workout">Ask Claude ▸</button>
+        <button type="button" class="log-action" data-export="copy" data-session-id="${escapeAttr(s.date)}" aria-label="Copy this workout as prompt for any AI">Copy prompt</button>
+      </div>
+      <p class="log-status" id="logStatus" role="status" aria-live="polite"></p>
+    </div>
+  `;
+}
+
+function escapeAttr(s: string): string {
+  return s.replace(/[&<>"']/g, (c) => {
+    switch (c) {
+      case "&": return "&amp;";
+      case "<": return "&lt;";
+      case ">": return "&gt;";
+      case '"': return "&quot;";
+      case "'": return "&#39;";
+      default: return c;
+    }
+  });
 }
 
 // ───────────────────────── DIAL MARKUP ─────────────────────────

@@ -871,16 +871,44 @@ body::before {
 }
 
 .log-item {
+  border-top: 1.5px solid var(--ink-faint);
+}
+
+.log-item-btn {
   display: grid;
-  grid-template-columns: auto auto auto auto 1fr auto;
+  grid-template-columns: auto auto auto auto 1fr auto auto;
   align-items: center;
   gap: 8px;
+  width: 100%;
   padding: 8px 2px;
-  border-top: 1.5px solid var(--ink-faint);
+  background: transparent;
+  border: none;
+  font: inherit;
   font-family: var(--font-mono);
   font-weight: 600;
   font-size: 12px;
   color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+  touch-action: manipulation;
+  transition: background 120ms ease;
+}
+
+.log-item-btn:hover,
+.log-item-btn:focus-visible {
+  background: var(--paper-deep);
+  outline: none;
+}
+
+.log-item-btn:active {
+  background: var(--paper-ash);
+}
+
+.log-chevron {
+  font-family: var(--font-display);
+  font-size: 18px;
+  color: var(--ink-faint);
+  padding-right: 4px;
 }
 
 .log-type {
@@ -915,6 +943,183 @@ body::before {
 
 .log-item:first-child {
   border-top: none;
+}
+
+/* ───────────────────────── SESSION DETAIL ───────────────────────── */
+
+.log-back {
+  font: inherit;
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 10px;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  background: transparent;
+  color: var(--ink-soft);
+  border: none;
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 4px;
+  padding: 6px 0 4px;
+  align-self: flex-start;
+}
+
+.log-back:hover,
+.log-back:focus-visible {
+  color: var(--brick);
+  outline: none;
+}
+
+.session-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px 16px 18px;
+  background: var(--paper-deep);
+  border: 2.5px solid var(--ink);
+  box-shadow: 4px 4px 0 0 var(--ink);
+}
+
+.detail-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.detail-date {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--ink);
+  text-transform: uppercase;
+  flex: 1;
+}
+
+.detail-band {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--band);
+  border: 2px solid var(--ink);
+}
+
+.detail-band.none {
+  background: transparent;
+  position: relative;
+}
+
+.detail-band.none::before {
+  content: "";
+  position: absolute;
+  inset: 1px;
+  background: linear-gradient(45deg, transparent 45%, var(--ink) 45%, var(--ink) 55%, transparent 55%);
+}
+
+.detail-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+.detail-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 10px 6px 8px;
+  background: var(--paper);
+  border: 2px solid var(--ink);
+  box-shadow: 3px 3px 0 0 var(--ink);
+}
+
+.detail-stat-label {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 9px;
+  letter-spacing: 0.22em;
+  color: var(--brick);
+  text-transform: uppercase;
+}
+
+.detail-stat-value {
+  font-family: var(--font-impact);
+  font-size: 28px;
+  line-height: 1;
+  color: var(--ink);
+  margin-top: 4px;
+  font-variant-numeric: tabular-nums;
+}
+
+.detail-breakdown {
+  overflow-x: auto;
+}
+
+.detail-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--ink);
+}
+
+.detail-table th {
+  font-weight: 700;
+  font-size: 9px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--brick);
+  text-align: left;
+  padding: 0 6px 8px;
+  border-bottom: 2px solid var(--ink);
+}
+
+.detail-th-right {
+  text-align: right;
+}
+
+.detail-table td {
+  padding: 6px;
+  border-bottom: 1px solid var(--ink-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.detail-table td:last-child {
+  text-align: right;
+}
+
+.detail-table tr:last-child td {
+  border-bottom: none;
+}
+
+.detail-row-reps {
+  font-family: var(--font-impact);
+  font-size: 18px;
+}
+
+.detail-row-hit {
+  color: var(--brick);
+  font-weight: 700;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+}
+
+.detail-row-miss {
+  color: var(--signal);
+  font-weight: 700;
+  font-size: 12px;
+}
+
+.detail-foot {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-weight: 500;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: var(--ink-soft);
+  text-align: center;
 }
 
 .log-band {
