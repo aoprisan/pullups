@@ -608,6 +608,8 @@ emomPrimaryBtn.addEventListener("click", () => {
   if (phase === "idle" || phase === "done") {
     emomTimer.setConfig(emomMinutes, emomReps);
     emomTimer.start(now);
+    keepScreenOn = true;
+    void acquireWakeLock();
   }
 });
 
@@ -623,6 +625,39 @@ emomResetBtn.addEventListener("click", () => {
     if (!window.confirm("Discard this EMOM?")) return;
   }
   emomTimer.reset();
+  releaseScreenLock();
+});
+
+// ───────────────────────── WAKE LOCK ─────────────────────────
+// Keep the screen lit while an EMOM is running so the minute-cue beeps
+// land on an awake screen. Browsers auto-release the lock when the tab
+// hides, so we re-acquire on visibilitychange while EMOM is still active.
+
+let wakeLock: WakeLockSentinel | null = null;
+let keepScreenOn = false;
+
+async function acquireWakeLock(): Promise<void> {
+  if (!("wakeLock" in navigator)) return;
+  try {
+    wakeLock = await navigator.wakeLock.request("screen");
+    wakeLock.addEventListener("release", () => {
+      wakeLock = null;
+    });
+  } catch {
+    // unsupported, denied, or document not visible — silently ignore
+  }
+}
+
+function releaseScreenLock(): void {
+  keepScreenOn = false;
+  if (wakeLock) void wakeLock.release().catch(() => undefined);
+  wakeLock = null;
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (keepScreenOn && document.visibilityState === "visible" && !wakeLock) {
+    void acquireWakeLock();
+  }
 });
 
 // ───────────────────────── APP UPDATES ─────────────────────────
@@ -739,6 +774,7 @@ function frame(now: number) {
   }
   if (emomView.enteredPhase === "done") {
     beepDone();
+    releaseScreenLock();
     if (emomView.setsCompleted > 0) recordEmomSession(emomView);
   }
 
