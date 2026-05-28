@@ -385,15 +385,16 @@ body::before {
 
 .dial-stage {
   position: relative;
-  margin: 4px 0 0;
-  display: flex;
-  justify-content: center;
-  align-items: center;
+  margin: 4px auto 0;
+  width: min(100%, 340px);
+  aspect-ratio: 1;
   animation: rise 600ms cubic-bezier(0.16, 0.84, 0.36, 1) 180ms both;
+  /* Hit-test only the round dial face. Corners of the square stage fall through
+     to the surrounding panel so the page can still scroll on mobile, even when
+     the dial is mid-gesture and the inside of the face is non-scrolling. */
+  clip-path: circle(50%);
 }
 
-/* Only swallow touch gestures while the dial is actually interactive — otherwise
-   the square stage blocks page-scrolling on mobile even though the dial is idle. */
 .dial-stage.grab-hint,
 .dial-stage.grabbing {
   touch-action: none;
