@@ -4,7 +4,10 @@ import { beepCountdown, beepRepCue, beepDone, unlockAudio } from "./audio";
 
 const REP_OPTIONS = [10, 20] as const;
 const DEFAULT_REPS = 20;
-const INTERVAL_MS = 60_000;
+const RPM_OPTIONS = [1, 2, 3, 4, 6] as const;
+type Rpm = (typeof RPM_OPTIONS)[number];
+const DEFAULT_RPM: Rpm = 1;
+const MINUTE_MS = 60_000;
 const DIAL_PATH_LENGTH = 100;
 const SVG_NS = "http://www.w3.org/2000/svg";
 
@@ -19,9 +22,14 @@ type BandId = (typeof BANDS)[number]["id"];
 const BAND_IDS = BANDS.map((b) => b.id) as readonly BandId[];
 const DEFAULT_BAND: BandId = "green";
 
+const TABS = ["workout", "log"] as const;
+type TabId = (typeof TABS)[number];
+const DEFAULT_TAB: TabId = "workout";
+
 interface Session {
   date: string;
   reps: number;
+  rpm: number;
   band: BandId;
   elapsedMs: number;
   completedReps: number;
@@ -31,12 +39,14 @@ const MAX_SESSIONS = 50;
 const LOG_DISPLAY_LIMIT = 6;
 
 let currentReps: number = loadReps();
+let currentRpm: Rpm = loadRpm();
 let currentBand: BandId = loadBand();
 let sessions: Session[] = loadSessions();
+let currentTab: TabId = DEFAULT_TAB;
 let prevRenderedPhase: Phase = "idle";
 let timer = new PullupTimer({
   totalReps: currentReps,
-  intervalMs: INTERVAL_MS,
+  intervalMs: intervalMsFor(currentRpm),
 });
 
 const app = document.getElementById("app");
@@ -48,71 +58,92 @@ app.innerHTML = `
       <h1>PULL<span class="accent">·</span>UPS</h1>
       <div class="masthead-stamp" id="logNumber">LOG&nbsp;N°&nbsp;${pad3(sessions.length + 1)}</div>
     </div>
-    <div class="masthead-sub" id="modeLabel">${modeLabel(currentReps)}</div>
+    <div class="masthead-sub" id="modeLabel">${modeLabel(currentReps, currentRpm)}</div>
     <div class="hatching" aria-hidden="true"></div>
   </header>
 
-  <section class="seg" role="radiogroup" aria-label="Total reps" id="repSelector">
-    ${REP_OPTIONS.map(
-      (n) =>
-        `<button type="button" role="radio" data-reps="${n}" aria-checked="${n === currentReps}">${pad2(n)} REPS</button>`,
+  <nav class="tabs" role="tablist" id="tabBar">
+    ${TABS.map(
+      (t) =>
+        `<button type="button" role="tab" data-tab="${t}" aria-selected="${t === currentTab}" id="tab-${t}" aria-controls="panel-${t}">${tabLabel(t)}</button>`,
     ).join("")}
-  </section>
+  </nav>
 
-  <section class="bands" id="bandSelector" role="radiogroup" aria-label="Resistance band">
-    <div class="bands-caption">Resistance band</div>
-    <div class="bands-row">
-      ${BANDS.map(
-        (b) =>
-          `<button type="button" role="radio" class="band-chip" data-band="${b.id}" aria-checked="${b.id === currentBand}" aria-label="${bandTitle(b.id)}" style="--band:${b.color}"><span class="band-dot${b.id === "none" ? " none" : ""}"></span><span class="band-name">${b.label}</span></button>`,
+  <section class="tab-panel" id="panel-workout" role="tabpanel" aria-labelledby="tab-workout">
+    <section class="seg" role="radiogroup" aria-label="Total reps" id="repSelector" style="--cols: ${REP_OPTIONS.length}">
+      ${REP_OPTIONS.map(
+        (n) =>
+          `<button type="button" role="radio" data-reps="${n}" aria-checked="${n === currentReps}">${pad2(n)} REPS</button>`,
       ).join("")}
+    </section>
+
+    <section class="pace" id="rpmSelector" role="radiogroup" aria-label="Reps per minute">
+      <div class="pace-caption">Pace · reps per minute</div>
+      <div class="seg" style="--cols: ${RPM_OPTIONS.length}">
+        ${RPM_OPTIONS.map(
+          (n) =>
+            `<button type="button" role="radio" data-rpm="${n}" aria-checked="${n === currentRpm}">${n}/MIN</button>`,
+        ).join("")}
+      </div>
+    </section>
+
+    <section class="bands" id="bandSelector" role="radiogroup" aria-label="Resistance band">
+      <div class="bands-caption">Resistance band</div>
+      <div class="bands-row">
+        ${BANDS.map(
+          (b) =>
+            `<button type="button" role="radio" class="band-chip" data-band="${b.id}" aria-checked="${b.id === currentBand}" aria-label="${bandTitle(b.id)}" style="--band:${b.color}"><span class="band-dot${b.id === "none" ? " none" : ""}"></span><span class="band-name">${b.label}</span></button>`,
+        ).join("")}
+      </div>
+    </section>
+
+    <div class="dial-stage">
+      <svg class="dial" id="dial" viewBox="0 0 340 340" aria-hidden="true">
+        <defs>
+          <radialGradient id="dialFace" cx="50%" cy="40%" r="66%">
+            <stop offset="0%" stop-color="#f4eddc" />
+            <stop offset="58%" stop-color="#e9dec3" />
+            <stop offset="100%" stop-color="#d6c79f" />
+          </radialGradient>
+          <filter id="dialEmboss" x="-25%" y="-25%" width="150%" height="150%">
+            <feDropShadow dx="0" dy="3" stdDeviation="5" flood-color="#15110d" flood-opacity="0.17" />
+          </filter>
+        </defs>
+        <circle class="dial-face" cx="170" cy="170" r="154" fill="url(#dialFace)" filter="url(#dialEmboss)" />
+        <circle class="dial-rim" cx="170" cy="170" r="154" />
+        <g class="dial-ticks" id="dialTicks"></g>
+        <g class="dial-numerals" id="dialNumerals"></g>
+        <circle class="dial-track" cx="170" cy="170" r="138" />
+        <circle
+          class="dial-fill idle"
+          id="dialFill"
+          cx="170"
+          cy="170"
+          r="138"
+          pathLength="${DIAL_PATH_LENGTH}"
+          stroke-dasharray="${DIAL_PATH_LENGTH} ${DIAL_PATH_LENGTH}"
+          stroke-dashoffset="${DIAL_PATH_LENGTH}"
+        />
+      </svg>
+      <div class="dial-center" id="dialCenter">
+        <div class="eyebrow" id="eyebrow">READY</div>
+        <div class="big-number" id="big">${pad2(1)}</div>
+        <div class="big-number-of" id="bigOf">of ${pad2(currentReps)}</div>
+        <div class="dial-status" id="dialStatus">PRESS START</div>
+      </div>
+    </div>
+
+    <section class="tally" id="tally" aria-label="Rep progression"></section>
+
+    <div class="meta">
+      <span class="meta-label">Elapsed</span>
+      <span class="meta-value" id="elapsed">0:00</span>
     </div>
   </section>
 
-  <div class="dial-stage">
-    <svg class="dial" id="dial" viewBox="0 0 340 340" aria-hidden="true">
-      <defs>
-        <radialGradient id="dialFace" cx="50%" cy="40%" r="66%">
-          <stop offset="0%" stop-color="#f4eddc" />
-          <stop offset="58%" stop-color="#e9dec3" />
-          <stop offset="100%" stop-color="#d6c79f" />
-        </radialGradient>
-        <filter id="dialEmboss" x="-25%" y="-25%" width="150%" height="150%">
-          <feDropShadow dx="0" dy="3" stdDeviation="5" flood-color="#15110d" flood-opacity="0.17" />
-        </filter>
-      </defs>
-      <circle class="dial-face" cx="170" cy="170" r="154" fill="url(#dialFace)" filter="url(#dialEmboss)" />
-      <circle class="dial-rim" cx="170" cy="170" r="154" />
-      <g class="dial-ticks" id="dialTicks"></g>
-      <g class="dial-numerals" id="dialNumerals"></g>
-      <circle class="dial-track" cx="170" cy="170" r="138" />
-      <circle
-        class="dial-fill idle"
-        id="dialFill"
-        cx="170"
-        cy="170"
-        r="138"
-        pathLength="${DIAL_PATH_LENGTH}"
-        stroke-dasharray="${DIAL_PATH_LENGTH} ${DIAL_PATH_LENGTH}"
-        stroke-dashoffset="${DIAL_PATH_LENGTH}"
-      />
-    </svg>
-    <div class="dial-center" id="dialCenter">
-      <div class="eyebrow" id="eyebrow">READY</div>
-      <div class="big-number" id="big">${pad2(1)}</div>
-      <div class="big-number-of" id="bigOf">of ${pad2(currentReps)}</div>
-      <div class="dial-status" id="dialStatus">PRESS START</div>
-    </div>
-  </div>
-
-  <section class="tally" id="tally" aria-label="Rep progression"></section>
-
-  <div class="meta">
-    <span class="meta-label">Elapsed</span>
-    <span class="meta-value" id="elapsed">0:00</span>
-  </div>
-
-  <section class="log" id="log" aria-label="Session log"></section>
+  <section class="tab-panel hidden" id="panel-log" role="tabpanel" aria-labelledby="tab-log">
+    <section class="log" id="log" aria-label="Session log"></section>
+  </section>
 
   <div class="controls">
     <button class="primary idle" id="primaryBtn">START</button>
@@ -133,18 +164,34 @@ const tallyEl = byId("tally");
 const elapsedEl = byId("elapsed");
 const modeLabelEl = byId("modeLabel");
 const repSelectorEl = byId("repSelector");
+const rpmSelectorEl = byId("rpmSelector");
 const bandSelectorEl = byId("bandSelector");
 const logEl = byId("log");
 const logNumberEl = byId("logNumber");
+const tabBarEl = byId("tabBar");
 const primaryBtn = byId("primaryBtn") as HTMLButtonElement;
 const resetBtn = byId("resetBtn") as HTMLButtonElement;
 const updateBtn = byId("updateBtn") as HTMLButtonElement;
 const buildStampEl = byId("buildStamp");
 
-buildDialDecorations();
+buildDialTicks();
+renderDialNumerals(currentRpm);
 renderTally(0);
 renderBuildStamp();
 renderLog();
+syncTabs();
+
+tabBarEl.addEventListener("click", (e) => {
+  const target = e.target;
+  if (!(target instanceof HTMLElement)) return;
+  const btn = target.closest<HTMLButtonElement>("button[data-tab]");
+  if (!btn) return;
+  const next = btn.dataset.tab as TabId | undefined;
+  if (!next || !TABS.includes(next)) return;
+  if (next === currentTab) return;
+  currentTab = next;
+  syncTabs();
+});
 
 repSelectorEl.addEventListener("click", (e) => {
   const target = e.target;
@@ -156,6 +203,18 @@ repSelectorEl.addEventListener("click", (e) => {
   if (next === currentReps) return;
   if (!canChangeReps()) return;
   setReps(next);
+});
+
+rpmSelectorEl.addEventListener("click", (e) => {
+  const target = e.target;
+  if (!(target instanceof HTMLElement)) return;
+  const btn = target.closest<HTMLButtonElement>("button[data-rpm]");
+  if (!btn || btn.disabled) return;
+  const next = Number(btn.dataset.rpm);
+  if (!RPM_OPTIONS.includes(next as Rpm)) return;
+  if (next === currentRpm) return;
+  if (!canChangeReps()) return;
+  setRpm(next as Rpm);
 });
 
 bandSelectorEl.addEventListener("click", (e) => {
@@ -326,15 +385,31 @@ requestAnimationFrame(frame);
 function setReps(n: number) {
   currentReps = n;
   saveReps(n);
-  timer = new PullupTimer({
-    totalReps: currentReps,
-    intervalMs: INTERVAL_MS,
-  });
-  modeLabelEl.textContent = modeLabel(currentReps);
+  rebuildTimer();
+  modeLabelEl.textContent = modeLabel(currentReps, currentRpm);
   bigOfEl.textContent = `of ${pad2(currentReps)}`;
   renderTally(0);
   syncRepSelector();
+  syncRpmSelector();
   syncBandSelector();
+}
+
+function setRpm(rpm: Rpm) {
+  currentRpm = rpm;
+  saveRpm(rpm);
+  rebuildTimer();
+  modeLabelEl.textContent = modeLabel(currentReps, currentRpm);
+  renderDialNumerals(currentRpm);
+  syncRepSelector();
+  syncRpmSelector();
+  syncBandSelector();
+}
+
+function rebuildTimer() {
+  timer = new PullupTimer({
+    totalReps: currentReps,
+    intervalMs: intervalMsFor(currentRpm),
+  });
 }
 
 function setBand(id: BandId) {
@@ -359,6 +434,17 @@ function syncRepSelector() {
   }
 }
 
+function syncRpmSelector() {
+  const canChange = canChangeReps();
+  for (const btn of rpmSelectorEl.querySelectorAll<HTMLButtonElement>("button[data-rpm]")) {
+    const n = Number(btn.dataset.rpm);
+    const selected = n === currentRpm;
+    btn.setAttribute("aria-checked", String(selected));
+    btn.classList.toggle("active", selected);
+    btn.disabled = !canChange;
+  }
+}
+
 function syncBandSelector() {
   const canChange = canChangeReps();
   for (const btn of bandSelectorEl.querySelectorAll<HTMLButtonElement>("button[data-band]")) {
@@ -368,6 +454,18 @@ function syncBandSelector() {
     // Keep the chosen band visible while a workout is in progress; only the
     // alternatives are locked out.
     btn.disabled = !canChange && !selected;
+  }
+}
+
+function syncTabs() {
+  for (const btn of tabBarEl.querySelectorAll<HTMLButtonElement>("button[data-tab]")) {
+    const selected = btn.dataset.tab === currentTab;
+    btn.setAttribute("aria-selected", String(selected));
+    btn.classList.toggle("active", selected);
+  }
+  for (const t of TABS) {
+    const panel = document.getElementById(`panel-${t}`);
+    if (panel) panel.classList.toggle("hidden", t !== currentTab);
   }
 }
 
@@ -401,6 +499,7 @@ function render(v: ViewState) {
   renderTally(v.repsCompleted);
   highlightCurrentTally(v);
   syncRepSelector();
+  syncRpmSelector();
   syncBandSelector();
 
   primaryBtn.className = `primary ${v.phase}`;
@@ -461,8 +560,23 @@ function primaryLabel(phase: Phase): string {
   }
 }
 
-function modeLabel(reps: number): string {
-  return `${pad2(reps)} reps · 60 second rest · one minute on the minute`;
+function modeLabel(reps: number, rpm: Rpm): string {
+  const intervalSec = Math.round(intervalMsFor(rpm) / 1000);
+  const pace = rpm === 1 ? "one rep per minute" : `${rpm} reps per minute`;
+  return `${pad2(reps)} reps · ${intervalSec}s rest · ${pace}`;
+}
+
+function tabLabel(t: TabId): string {
+  switch (t) {
+    case "workout":
+      return "Workout";
+    case "log":
+      return "Log";
+  }
+}
+
+function intervalMsFor(rpm: Rpm): number {
+  return Math.round(MINUTE_MS / rpm);
 }
 
 function applyDialFill(v: ViewState) {
@@ -486,9 +600,8 @@ function pulseBig() {
   dialCenterEl.classList.add("pulse-now");
 }
 
-function buildDialDecorations() {
+function buildDialTicks() {
   const ticksGroup = byId("dialTicks");
-  const numeralsGroup = byId("dialNumerals");
   const cx = 170;
   const cy = 170;
 
@@ -510,11 +623,21 @@ function buildDialDecorations() {
     ticksGroup.appendChild(line);
   }
 
+  void dialEl;
+}
+
+function renderDialNumerals(rpm: Rpm) {
+  const numeralsGroup = byId("dialNumerals");
+  numeralsGroup.innerHTML = "";
+  const cx = 170;
+  const cy = 170;
+  const intervalSec = Math.round(intervalMsFor(rpm) / 1000);
+
   const numerals: Array<{ at: number; label: string }> = [
-    { at: 0, label: "60" },
-    { at: 15, label: "15" },
-    { at: 30, label: "30" },
-    { at: 45, label: "45" },
+    { at: 0, label: String(intervalSec) },
+    { at: 15, label: String(Math.round(intervalSec * 0.25)) },
+    { at: 30, label: String(Math.round(intervalSec * 0.5)) },
+    { at: 45, label: String(Math.round(intervalSec * 0.75)) },
   ];
   for (const { at, label } of numerals) {
     const angle = (at / 60) * Math.PI * 2 - Math.PI / 2;
@@ -528,8 +651,6 @@ function buildDialDecorations() {
     text.textContent = label;
     numeralsGroup.appendChild(text);
   }
-
-  void dialEl;
 }
 
 function renderTally(filledCount: number) {
@@ -609,6 +730,25 @@ function saveReps(n: number) {
   }
 }
 
+function loadRpm(): Rpm {
+  try {
+    const raw = localStorage.getItem("pullups.rpm");
+    const n = raw === null ? NaN : Number(raw);
+    if (RPM_OPTIONS.includes(n as Rpm)) return n as Rpm;
+  } catch {
+    // localStorage unavailable
+  }
+  return DEFAULT_RPM;
+}
+
+function saveRpm(rpm: Rpm) {
+  try {
+    localStorage.setItem("pullups.rpm", String(rpm));
+  } catch {
+    // ignore
+  }
+}
+
 function loadBand(): BandId {
   try {
     const raw = localStorage.getItem("pullups.band");
@@ -633,23 +773,37 @@ function loadSessions(): Session[] {
     if (!raw) return [];
     const parsed: unknown = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
-    return parsed.filter(isSession);
+    return parsed.flatMap((x): Session[] => {
+      const s = normalizeSession(x);
+      return s ? [s] : [];
+    });
   } catch {
     return [];
   }
 }
 
-function isSession(x: unknown): x is Session {
-  if (typeof x !== "object" || x === null) return false;
+function normalizeSession(x: unknown): Session | null {
+  if (typeof x !== "object" || x === null) return null;
   const s = x as Record<string, unknown>;
-  return (
-    typeof s.date === "string" &&
-    typeof s.reps === "number" &&
-    typeof s.band === "string" &&
-    BAND_IDS.includes(s.band as BandId) &&
-    typeof s.elapsedMs === "number" &&
-    typeof s.completedReps === "number"
-  );
+  if (
+    typeof s.date !== "string" ||
+    typeof s.reps !== "number" ||
+    typeof s.band !== "string" ||
+    !BAND_IDS.includes(s.band as BandId) ||
+    typeof s.elapsedMs !== "number" ||
+    typeof s.completedReps !== "number"
+  ) {
+    return null;
+  }
+  const rpm = typeof s.rpm === "number" && RPM_OPTIONS.includes(s.rpm as Rpm) ? (s.rpm as number) : 1;
+  return {
+    date: s.date,
+    reps: s.reps,
+    rpm,
+    band: s.band as BandId,
+    elapsedMs: s.elapsedMs,
+    completedReps: s.completedReps,
+  };
 }
 
 function saveSessions(list: Session[]) {
@@ -664,6 +818,7 @@ function recordSession(v: ViewState) {
   const session: Session = {
     date: new Date().toISOString(),
     reps: currentReps,
+    rpm: currentRpm,
     band: currentBand,
     elapsedMs: Math.round(v.totalElapsedMs),
     completedReps: v.repsCompleted,
@@ -692,6 +847,7 @@ function renderLog() {
       <li class="log-item">
         <span class="log-band${s.band === "none" ? " none" : ""}" style="--band:${bandColor(s.band)}" title="${bandTitle(s.band)}"></span>
         <span class="log-reps">${pad2(s.completedReps)}/${pad2(s.reps)}</span>
+        <span class="log-pace" title="Reps per minute">${s.rpm}/min</span>
         <span class="log-date">${formatLogDate(s.date)}</span>
         <span class="log-time">${formatClock(s.elapsedMs)}</span>
       </li>`,
