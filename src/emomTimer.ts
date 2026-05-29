@@ -156,7 +156,11 @@ export class EmomTimer {
     if (this.sets.length >= this.totalMinutes) {
       this.endedAtMs = this.startedAtMs + this.totalMinutes * MINUTE_MS;
       this.phase = "done";
-      this.justEnteredPhase = "done";
+      // Note: the "done" transition is reported via the returned enteredPhase
+      // below. We must NOT also set justEnteredPhase here — it was already
+      // consumed at the top of this tick, so re-setting it would make the next
+      // tick's done-branch report enteredPhase "done" a second time and
+      // double-log the session.
       const cue = this.pendingMinuteCue;
       this.pendingMinuteCue = null;
       return {
